@@ -31,7 +31,7 @@ enum Command {
         #[arg(long)]
         profile: String,
     },
-    /// Sign an explicitly scoped school delegation for a skin-station issuer.
+    /// Sign an explicitly scoped school delegation for a federated-skinstation issuer.
     DelegateStudents {
         #[arg(long)]
         key: PathBuf,
