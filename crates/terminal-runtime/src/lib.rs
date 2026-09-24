@@ -22,7 +22,7 @@ use union_core::{
 
 #[derive(Clone, Debug, Args)]
 pub struct NodeArgs {
-    /// Persistent device key. Create it with manager-app keygen first.
+    /// Persistent device key. Create it with union-manager keygen first.
     #[arg(long)]
     pub key: PathBuf,
     #[arg(long, default_value = "/ip4/127.0.0.1/udp/0/quic-v1")]
