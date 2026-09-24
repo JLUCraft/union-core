@@ -1,4 +1,4 @@
-//! Version 1 wire types. Keep these tags synchronized with proto/union.proto.
+//! Version 1 wire types. These `derive(Message)` definitions are the canonical wire schema.
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use prost::Message;
 
