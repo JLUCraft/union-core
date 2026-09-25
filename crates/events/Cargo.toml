@@ -3,9 +3,11 @@ name = "events"
 version = "0.1.0"
 edition = "2024"
 publish = false
+[features]
+documents = ["dep:node", "dep:tokio"]
 [dependencies]
-node = { path = "../node" }
-tokio = { version = "1", features = ["rt", "time", "sync", "fs"] }
+node = { path = "../node", optional = true }
+tokio = { version = "1", features = ["rt", "time", "sync", "fs"], optional = true }
 state = { path = "../state" }
 wire = { path = "../wire" }
 serde = { version = "1", features = ["derive"] }

@@ -5,6 +5,7 @@ pub use identity::{Identity, PeerId};
 pub use node::{AddressProtocol, Multiaddr, Node, NodeConfig, ServiceId};
 pub use state::governance;
 pub use wire::{Error, Result, protocol};
+#[cfg(feature = "league")]
 pub mod client;
 pub mod llm;
 pub mod ops;
@@ -12,6 +13,7 @@ pub mod ops;
 pub mod generic;
 pub mod rooms;
 
+#[cfg(feature = "office")]
 pub mod office;
 
 pub mod trust;

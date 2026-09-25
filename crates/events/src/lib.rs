@@ -372,4 +372,5 @@ impl Domain for EventsDomain {
     }
 }
 
+#[cfg(feature = "documents")]
 pub mod documents;

@@ -4,12 +4,15 @@ version = "0.2.0"
 edition = "2024"
 publish = false
 
+[features]
+consensus = ["league/consensus", "authority/consensus"]
+
 [dependencies]
-league = { path = "../crates/league" }
+league = { path = "../crates/league", features = ["runtime"] }
 authority = { path = "../crates/authority" }
 journal = { path = "../crates/journal" }
 node = { path = "../crates/node" }
-client = { path = "../crates/client" }
+client = { path = "../crates/client", features = ["league"] }
 identity = { path = "../crates/identity" }
 state = { path = "../crates/state" }
 events = { path = "../crates/events" }

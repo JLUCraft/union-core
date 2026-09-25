@@ -26,6 +26,14 @@ for name, permitted in allowed.items():
     dependencies = manifest["dependencies"]
     local = {key for key, value in dependencies.items() if isinstance(value, dict) and "path" in value}
     assert local <= permitted, (name, "forbidden dependency", local - permitted)
+    if name == "league":
+        assert dependencies["authority"].get("optional") is True, "league runtime assembly must stay optional"
+    if name == "events":
+        assert dependencies["node"].get("optional") is True, "document transport must stay optional"
+    if name == "client":
+        assert dependencies["league"].get("optional") is True, "league bindings must stay optional in client"
+        for domain in ("events", "flows"):
+            assert dependencies[domain].get("optional") is True, "office bindings must stay optional in client"
     if name in {"wire", "identity", "state", "league"}:
         forbidden = {"tokio", "libp2p", "libp2p-stream", "reqwest", "openraft"}
         assert not forbidden.intersection(dependencies), (name, "transport in pure layer")

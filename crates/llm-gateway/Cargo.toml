@@ -23,5 +23,5 @@ tempfile = "3"
 unsafe_code = "forbid"
 
 [dev-dependencies]
-league = { path = "../league" }
-client = { path = "../client" }
+league = { path = "../league", features = ["runtime"] }
+client = { path = "../client", features = ["league"] }

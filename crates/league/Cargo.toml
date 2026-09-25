@@ -4,11 +4,15 @@ version = "0.2.0"
 edition = "2024"
 publish = false
 
+[features]
+runtime = ["dep:authority"]
+consensus = ["runtime", "authority/consensus"]
+
 [dependencies]
 state = { path = "../state" }
 wire = { path = "../wire" }
 identity = { path = "../identity" }
-authority = { path = "../authority" }
+authority = { path = "../authority", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.11" }

@@ -4,10 +4,14 @@ version = "0.2.0"
 edition = "2024"
 publish = false
 
+[features]
+league = ["dep:league"]
+office = ["dep:events", "dep:flows"]
+
 [dependencies]
-events = { path = "../events" }
-flows = { path = "../flows" }
-league = { path = "../league" }
+events = { path = "../events", optional = true }
+flows = { path = "../flows", optional = true }
+league = { path = "../league", optional = true }
 wire = { path = "../wire" }
 identity = { path = "../identity" }
 node = { path = "../node" }
