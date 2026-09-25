@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Identity-authorized LLM service. No provider secrets or prompts enter the usage ledger.
 mod ledger;
 mod provider;

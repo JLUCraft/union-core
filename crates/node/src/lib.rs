@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Authenticated service transport and admission.
 pub use identity::Identity;
 pub use libp2p::multiaddr::Protocol as AddressProtocol;

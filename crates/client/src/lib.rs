@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Shared native clients for governance, LLM and federated operations services.
 pub use authority::journal;
 pub use identity::{Identity, PeerId};

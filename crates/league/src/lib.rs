@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! League domain; the platform state machine does not depend on this crate.
 pub use identity::PeerId;
 pub use wire::{Error, Result};

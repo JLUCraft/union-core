@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Deterministic event planning and replicated IPLD file history.
 pub mod files;
 use serde::{Deserialize, Serialize};

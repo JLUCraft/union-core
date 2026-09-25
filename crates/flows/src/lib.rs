@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Versioned, deterministic approval workflows composed around another Domain.
 use serde::{Deserialize, Serialize};
 use state::{Context, CoreView, Domain};

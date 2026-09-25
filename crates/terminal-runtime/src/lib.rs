@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Terminal assembly helpers. No application-specific policy lives in union-core.
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 

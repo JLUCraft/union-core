@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Local and replicated authority service assembly.
 pub use identity::{Identity, PeerId};
 pub use node::{Node, Stream};

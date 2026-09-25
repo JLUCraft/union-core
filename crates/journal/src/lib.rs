@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Durable governance state and revocation views, without a network node.
 pub use identity::{Identity, PeerId};
 pub use state::governance;
