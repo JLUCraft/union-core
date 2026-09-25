@@ -15,6 +15,15 @@ use std::{
 };
 
 pub use crate::protocol::{GOVERNANCE_PROTOCOL as PROTOCOL, JsonFrame};
+/// Upper bound for a signed one-shot command, independent of permanent membership.
+pub const MAX_COMMAND_TTL_MS: u64 = 5 * 60 * 1000;
+
+pub(crate) fn valid_expiry(expires: u64, now: u64) -> bool {
+    expires
+        .checked_sub(now)
+        .is_some_and(|ttl| ttl <= MAX_COMMAND_TTL_MS)
+}
+
 pub const MAX_SNAPSHOT: usize = 8 * 1024 * 1024;
 const TRUSTED_DOMAIN: &[u8] = b"jlucraft/governance/trusted/1\0";
 
@@ -88,6 +97,7 @@ impl<D: Domain> Journal<D> {
                 if bound.genesis != genesis_hash
                     || bound.previous != previous
                     || bound.identity != *identity.checkpoint()
+                    || !valid_expiry(bound.command.expires_ms, entry.time_ms)
                 {
                     return Err(Error::Denied);
                 }
@@ -346,6 +356,7 @@ impl<D: Domain> Journal<D> {
             || bound.identity != *trust.checkpoint()
             || bound.genesis != self.genesis_hash
             || bound.previous != self.head()?
+            || !valid_expiry(bound.command.expires_ms, now)
         {
             return Err(Error::Denied);
         }
@@ -374,5 +385,19 @@ impl<D: Domain> Journal<D> {
             self.trust = Some(trust);
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use super::{MAX_COMMAND_TTL_MS, valid_expiry};
+    #[test]
+    fn commands_have_bounded_lifetimes_without_overflow() {
+        assert!(!valid_expiry(9, 10));
+        assert!(valid_expiry(10, 10));
+        assert!(valid_expiry(10 + MAX_COMMAND_TTL_MS, 10));
+        assert!(!valid_expiry(11 + MAX_COMMAND_TTL_MS, 10));
+        assert!(!valid_expiry(u64::MAX, 10));
+        assert!(valid_expiry(u64::MAX, u64::MAX));
     }
 }
