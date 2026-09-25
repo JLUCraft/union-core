@@ -7,6 +7,7 @@ pub use wire::protocol::{
 };
 const MAX_CHAIRS: usize = 128;
 const MAX_DEVICES: usize = 8;
+const MAX_EVIDENCE_TYPES: usize = 128;
 const MAX_FACTS: usize = 100_000;
 
 use wire::protocol::validate_identifier as identifier;
@@ -465,6 +466,7 @@ impl TrustState {
                 device.parse::<PeerId>().map_err(|_| Error::Denied)?;
                 if !self.chair(club, signers)
                     || evidence.is_empty()
+                    || evidence.len() > MAX_EVIDENCE_TYPES
                     || self.verifiers.contains_key(id)
                     || self.verifiers.len() >= MAX_FACTS
                     || self.revoked_devices.contains(device)
