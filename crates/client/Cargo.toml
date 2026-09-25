@@ -1,0 +1,21 @@
+[package]
+name = "client"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+events = { path = "../events" }
+flows = { path = "../flows" }
+league = { path = "../league" }
+wire = { path = "../wire" }
+identity = { path = "../identity" }
+node = { path = "../node" }
+state = { path = "../state" }
+authority = { path = "../authority" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
+
+[lints.rust]
+unsafe_code = "forbid"

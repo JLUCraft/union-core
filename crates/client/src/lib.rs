@@ -1,0 +1,16 @@
+//! Shared native clients for governance, LLM and federated operations services.
+pub use authority::journal;
+pub use identity::{Identity, PeerId};
+pub use node::{AddressProtocol, Multiaddr, Node, NodeConfig, ServiceId};
+pub use state::governance;
+pub use wire::{Error, Result, protocol};
+pub mod client;
+pub mod llm;
+pub mod ops;
+
+pub mod generic;
+pub mod rooms;
+
+pub mod office;
+
+pub mod trust;

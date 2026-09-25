@@ -1,0 +1,30 @@
+[package]
+name = "union-tests"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+league = { path = "../crates/league" }
+authority = { path = "../crates/authority" }
+journal = { path = "../crates/journal" }
+node = { path = "../crates/node" }
+client = { path = "../crates/client" }
+identity = { path = "../crates/identity" }
+state = { path = "../crates/state" }
+events = { path = "../crates/events" }
+flows = { path = "../crates/flows" }
+wire = { path = "../crates/wire" }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
+tempfile = "3"
+openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
+prost = "0.14"
+uuid = { version = "1", features = ["v4"] }
+
+[lints.rust]
+unsafe_code = "forbid"

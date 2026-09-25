@@ -1,5 +1,6 @@
 use anyhow::Result;
 use futures::{AsyncReadExt, AsyncWriteExt};
+use node::{AccessPolicy, Identity, Node, NodeConfig, Service, ServiceId};
 use std::time::Duration;
 use terminal_runtime::{LocalProxy, TargetArgs};
 use tokio::{
@@ -7,7 +8,6 @@ use tokio::{
     net::TcpStream,
     time::timeout,
 };
-use union_core::{AccessPolicy, Identity, Node, NodeConfig, Service, ServiceId};
 
 #[tokio::test]
 async fn owned_proxy_transfers_half_close_and_closes_listener_on_drop() -> Result<()> {
@@ -17,6 +17,7 @@ async fn owned_proxy_transfers_half_close_and_closes_listener_on_drop() -> Resul
         let expected = player.peer_id();
         let service = ServiceId::new();
         host.publish(Service {
+            metadata: Vec::new(),
             id: service,
             name: "game".into(),
             protocol: "test/echo".into(),
@@ -30,8 +31,6 @@ async fn owned_proxy_transfers_half_close_and_closes_listener_on_drop() -> Resul
                 address: host.addresses(),
             },
             service,
-            None,
-            None,
             "127.0.0.1:0".parse()?,
         )
         .await?;
@@ -73,4 +72,41 @@ async fn owned_proxy_transfers_half_close_and_closes_listener_on_drop() -> Resul
         Ok::<_, anyhow::Error>(())
     })
     .await?
+}
+
+#[tokio::test]
+async fn bootstrap_connection_can_also_reserve_a_relay() -> Result<()> {
+    let relay = Node::start(
+        Identity::generate(),
+        NodeConfig {
+            listen: vec!["/ip4/127.0.0.1/tcp/0".parse()?],
+            relay: Some(node::RelayConfig::default()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let address = relay.addresses()[0].clone();
+    let mut external = address.clone();
+    external.pop();
+    relay.add_external_address(external).await?;
+    let host = Node::start(
+        Identity::generate(),
+        NodeConfig {
+            listen: vec!["/ip4/127.0.0.1/tcp/0".parse()?],
+            bootstrap: vec![address.clone()],
+            ..Default::default()
+        },
+    )
+    .await?;
+    let result = terminal_runtime::reserve_relays(&host, &[address]).await;
+    if result.is_ok() {
+        assert!(
+            host.addresses()
+                .iter()
+                .any(|a| a.to_string().contains("/p2p-circuit/"))
+        );
+    }
+    host.shutdown().await?;
+    relay.shutdown().await?;
+    result
 }

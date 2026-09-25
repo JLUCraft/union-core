@@ -1,24 +1,11 @@
 //! Terminal assembly helpers. No application-specific policy lives in union-core.
-use std::{
-    collections::HashSet,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use tokio::{
-    net::{TcpListener, TcpStream},
-    task::JoinSet,
-    time::timeout,
-};
+use node::{Identity, Multiaddr, Node, NodeConfig, PeerId, RelayConfig, ServiceId};
+use tokio::{net::TcpListener, task::JoinSet, time::timeout};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
-use union_core::{
-    AccessPolicy, Identity, Multiaddr, Node, NodeConfig, PeerId, RelayConfig, ServiceId,
-    SignedGrant,
-};
 
 #[derive(Clone, Debug, Args)]
 pub struct NodeArgs {
@@ -71,35 +58,41 @@ impl NodeArgs {
             },
         )
         .await?;
-        for relay in &self.reserve {
-            if !matches!(
-                relay.iter().last(),
-                Some(union_core::AddressProtocol::P2p(_))
-            ) {
-                bail!("--reserve must end in /p2p/RELAY");
-            }
-            let circuit: Multiaddr = format!("{relay}/p2p-circuit").parse()?;
-            node.listen_on(circuit.clone()).await?;
-            let expected = format!("{circuit}/p2p/{}", node.peer_id());
-            let mut addresses = node.watch_addresses();
-            timeout(Duration::from_secs(20), async {
-                loop {
-                    if addresses.borrow().iter().any(|a| a.to_string() == expected) {
-                        break;
-                    }
-                    addresses
-                        .changed()
-                        .await
-                        .context("node stopped while reserving relay")?;
-                }
-                Ok::<_, anyhow::Error>(())
-            })
-            .await
-            .context("relay reservation timed out")??;
-        }
+        reserve_relays(&node, &self.reserve).await?;
         tracing::info!(peer = %node.peer_id(), addresses = ?node.addresses(), "node ready");
         Ok(node)
     }
+}
+
+/// Reserve explicit relay circuits and wait until they are usable.
+pub async fn reserve_relays(node: &Node, relays: &[Multiaddr]) -> Result<()> {
+    anyhow::ensure!(relays.len() <= 8, "too many relay routes");
+    for relay in relays {
+        if !matches!(relay.iter().last(), Some(node::AddressProtocol::P2p(_))) {
+            bail!("--reserve must end in /p2p/RELAY");
+        }
+        // A bootstrap dial may still be pending; reserve only after the relay connection is ready.
+        node.dial(relay.clone()).await?;
+        let circuit: Multiaddr = format!("{relay}/p2p-circuit").parse()?;
+        node.listen_on(circuit.clone()).await?;
+        let expected = format!("{circuit}/p2p/{}", node.peer_id());
+        let mut addresses = node.watch_addresses();
+        timeout(Duration::from_secs(20), async {
+            loop {
+                if addresses.borrow().iter().any(|a| a.to_string() == expected) {
+                    break;
+                }
+                addresses
+                    .changed()
+                    .await
+                    .context("node stopped while reserving relay")?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("relay reservation timed out")??;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Args)]
@@ -133,37 +126,6 @@ impl TargetArgs {
     }
 }
 
-#[derive(Clone, Debug, Args)]
-pub struct AccessArgs {
-    /// Explicitly allow any authenticated union node. Does not disable MC login.
-    #[arg(long = "public", conflicts_with_all = ["allow_peer", "issuer"])]
-    pub public: bool,
-    #[arg(long, conflicts_with = "issuer")]
-    pub allow_peer: Vec<PeerId>,
-    /// Trusted grant issuers; hosting a service never makes its node a club issuer.
-    #[arg(long)]
-    pub issuer: Vec<PeerId>,
-    #[arg(long, requires = "issuer")]
-    pub revoked: Vec<String>,
-}
-
-impl AccessArgs {
-    pub fn policy(&self) -> AccessPolicy {
-        if self.public {
-            AccessPolicy::Public
-        } else if !self.allow_peer.is_empty() {
-            AccessPolicy::Peers(self.allow_peer.iter().copied().collect())
-        } else if !self.issuer.is_empty() {
-            AccessPolicy::Grants {
-                issuers: self.issuer.iter().copied().collect(),
-                revoked: self.revoked.iter().cloned().collect::<HashSet<_>>(),
-            }
-        } else {
-            AccessPolicy::Deny
-        }
-    }
-}
-
 pub fn init_logging() {
     tracing_subscriber::fmt()
         .with_ansi(false)
@@ -174,62 +136,13 @@ pub fn init_logging() {
         .init();
 }
 
-pub fn load_grant(path: Option<&Path>) -> Result<Option<SignedGrant>> {
-    path.map(|path| {
-        let size = std::fs::metadata(path)?.len();
-        anyhow::ensure!(
-            size <= union_core::protocol::MAX_FRAME as u64,
-            "grant file too large"
-        );
-        Ok(SignedGrant::decode(&std::fs::read(path)?)?)
-    })
-    .transpose()
-}
-
-/// Bridge authorized incoming sessions to one configured backend; clients cannot
-/// choose arbitrary TCP destinations. Minecraft authentication remains end-to-end.
-pub async fn serve_backend(mut node: Node, backend: SocketAddr) -> Result<()> {
-    let mut incoming = node.take_incoming()?;
-    let mut tasks = JoinSet::new();
-    loop {
-        tokio::select! {
-            signal = tokio::signal::ctrl_c() => { signal?; break; }
-            session = incoming.recv() => {
-                let Some(mut session) = session else { break; };
-                tasks.spawn(async move {
-                    let result = async {
-                        let mut backend = timeout(Duration::from_secs(10), TcpStream::connect(backend)).await??;
-                        backend.set_nodelay(true)?;
-                        let mut stream = (&mut session.stream).compat();
-                        tokio::io::copy_bidirectional(&mut stream, &mut backend).await?;
-                        Ok::<_, anyhow::Error>(())
-                    }.await;
-                    if let Err(error) = result { tracing::warn!(peer = %session.peer, %error, "backend session ended"); }
-                });
-            }
-            Some(result) = tasks.join_next(), if !tasks.is_empty() => {
-                if let Err(error) = result { tracing::error!(%error, "backend task failed"); }
-            }
-        }
-    }
-    tasks.shutdown().await;
-    node.shutdown().await?;
-    Ok(())
-}
-
 /// Owned local proxy. Dropping it closes the listener, sessions and network node.
 /// Suitable for desktop app state; never installs process-wide signal handlers.
 pub struct LocalProxy {
-    student: Arc<tokio::sync::RwLock<Option<union_core::federation::StudentPresentation>>>,
     address: SocketAddr,
     task: tokio::task::JoinHandle<Result<()>>,
 }
 impl LocalProxy {
-    pub fn proof_store(
-        &self,
-    ) -> Arc<tokio::sync::RwLock<Option<union_core::federation::StudentPresentation>>> {
-        self.student.clone()
-    }
     pub fn abort_handle(&self) -> tokio::task::AbortHandle {
         self.task.abort_handle()
     }
@@ -243,17 +156,11 @@ impl LocalProxy {
         node: Node,
         target: TargetArgs,
         service: ServiceId,
-        grant: Option<SignedGrant>,
-        student: Option<union_core::federation::StudentPresentation>,
         bind: SocketAddr,
     ) -> Result<Self> {
         anyhow::ensure!(
             bind.ip().is_loopback(),
             "player proxy must bind to loopback"
-        );
-        anyhow::ensure!(
-            grant.is_none() || student.is_none(),
-            "choose one admission proof"
         );
         target.connect(&node).await?;
         // Check service existence without creating an empty game session.
@@ -266,8 +173,6 @@ impl LocalProxy {
         );
         let listener = TcpListener::bind(bind).await?;
         let address = listener.local_addr()?;
-        let student = Arc::new(tokio::sync::RwLock::new(student));
-        let proofs = student.clone();
         let task = tokio::spawn(async move {
             let node = Arc::new(node);
             let limit = Arc::new(tokio::sync::Semaphore::new(64));
@@ -277,16 +182,13 @@ impl LocalProxy {
                     accepted = listener.accept() => {
                         let (mut local, _) = accepted?;
                         let Ok(permit) = limit.clone().try_acquire_owned() else { continue; };
-                        let (node, target, grant, student) = (node.clone(), target.clone(), grant.clone(), proofs.read().await.clone());
+                        let (node, target) = (node.clone(), target.clone());
                         tasks.spawn(async move {
                             let _permit = permit;
                             let result = async {
                                 local.set_nodelay(true)?;
                                 target.connect(&node).await?;
-                                let stream = match student {
-                                    Some(proof) => node.open_student_service(target.peer, service, &proof).await?,
-                                    None => node.open_service(target.peer, service, grant).await?,
-                                };
+                                let stream = node.open_service(target.peer, service).await?;
                                 tokio::io::copy_bidirectional(&mut local, &mut stream.compat()).await?;
                                 Ok::<_, anyhow::Error>(())
                             }.await;
@@ -299,11 +201,7 @@ impl LocalProxy {
                 }
             }
         });
-        Ok(Self {
-            address,
-            task,
-            student,
-        })
+        Ok(Self { address, task })
     }
 }
 impl Drop for LocalProxy {
@@ -317,10 +215,9 @@ pub async fn run_proxy(
     node: Node,
     target: TargetArgs,
     service: ServiceId,
-    grant: Option<SignedGrant>,
     bind: SocketAddr,
 ) -> Result<()> {
-    let proxy = LocalProxy::start(node, target, service, grant, None, bind).await?;
+    let proxy = LocalProxy::start(node, target, service, bind).await?;
     tracing::info!(address = %proxy.address(), "local game proxy ready");
     tokio::signal::ctrl_c().await?;
     drop(proxy);

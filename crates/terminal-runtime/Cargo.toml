@@ -5,7 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-union-core = { path = "../.." }
+state = { path = "../state" }
+node = { path = "../node" }
+authority = { path = "../authority" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
@@ -16,5 +18,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lints.rust]
 unsafe_code = "forbid"
-
-[workspace]
