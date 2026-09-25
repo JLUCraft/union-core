@@ -9,13 +9,7 @@ const MAX_CHAIRS: usize = 128;
 const MAX_DEVICES: usize = 8;
 const MAX_FACTS: usize = 100_000;
 
-fn identifier(value: &str) -> Result<()> {
-    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
-        return Err(Error::Protocol("invalid identifier".into()));
-    }
-    Ok(())
-}
-
+use wire::protocol::validate_identifier as identifier;
 fn json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|e| Error::Protocol(e.to_string()))
 }

@@ -1,4 +1,16 @@
 //! Version 1 wire types. These `derive(Message)` definitions are the canonical wire schema.
+/// Shared human-readable identifier syntax. Protocol names additionally require ASCII.
+pub fn validate_identifier(value: &str) -> crate::Result<()> {
+    const MAX_IDENTIFIER_BYTES: usize = 128;
+    if value.trim().is_empty()
+        || value.len() > MAX_IDENTIFIER_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(crate::Error::Denied);
+    }
+    Ok(())
+}
+
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -687,6 +699,20 @@ pub struct TrustAdmission {
     pub member: String,
     pub clubs: std::collections::BTreeSet<String>,
     pub game_profile: Option<String>,
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::validate_identifier;
+    #[test]
+    fn identifiers_have_shared_whitespace_control_and_byte_limits() {
+        for invalid in ["", " ", "\n", "a\0b", &"x".repeat(129)] {
+            assert!(validate_identifier(invalid).is_err());
+        }
+        for valid in ["member-a", "社团", &"x".repeat(128)] {
+            assert!(validate_identifier(valid).is_ok());
+        }
+    }
 }
 
 /// Stable application error classification for native/UI boundaries. Messages are diagnostic only.

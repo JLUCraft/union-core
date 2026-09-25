@@ -357,11 +357,7 @@ impl Node {
 
     /// Discover protocol providers as untrusted hints, then query each host directory.
     pub async fn discover_protocol(&self, protocol: &str) -> Result<Vec<PeerId>> {
-        if protocol.is_empty()
-            || protocol.len() > 128
-            || protocol.chars().any(char::is_control)
-            || !protocol.is_ascii()
-        {
+        if wire::protocol::validate_identifier(protocol).is_err() || !protocol.is_ascii() {
             return Err(Error::Protocol("invalid discovery protocol".into()));
         }
         let (tx, rx) = oneshot::channel();

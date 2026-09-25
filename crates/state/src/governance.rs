@@ -78,12 +78,7 @@ pub enum Action<D: Domain> {
 fn invalid(message: &str) -> Error {
     Error::Protocol(message.into())
 }
-pub fn identifier(value: &str) -> Result<()> {
-    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
-        return Err(Error::Protocol("invalid identifier".into()));
-    }
-    Ok(())
-}
+pub use wire::protocol::validate_identifier as identifier;
 
 /// Node IDs and authenticated transport identities are explicit, never inferred from addresses.
 pub fn validate_consensus_members(peers: &BTreeMap<u64, ConsensusPeer>) -> Result<()> {
