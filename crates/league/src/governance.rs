@@ -47,6 +47,8 @@ pub struct Seat {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct League {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted: Option<BTreeSet<String>>,
     pub rules: Rules,
     pub organizer: String,
     pub host: String,
@@ -102,6 +104,11 @@ pub struct LeagueState {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LeagueAction {
+    SetAttendance {
+        league: String,
+        members: BTreeSet<String>,
+        automatic: bool,
+    },
     CreateSeason {
         id: String,
         title: String,
@@ -250,6 +257,7 @@ impl LeagueState {
                 self.leagues.insert(
                     league,
                     League {
+                        admitted: None,
                         rules,
                         organizer: actor.into(),
                         host,
@@ -275,7 +283,8 @@ impl LeagueState {
             }
             action => {
                 let id = match &action {
-                    LeagueAction::CreateTeam { league, .. }
+                    LeagueAction::SetAttendance { league, .. }
+                    | LeagueAction::CreateTeam { league, .. }
                     | LeagueAction::Invite { league, .. }
                     | LeagueAction::Accept { league, .. }
                     | LeagueAction::Register { league, .. }
@@ -303,6 +312,47 @@ impl LeagueState {
                 }
                 let league = self.leagues.get_mut(id).ok_or(Error::NotFound)?;
                 match action {
+                    LeagueAction::SetAttendance {
+                        members, automatic, ..
+                    } => {
+                        league.registration()?;
+                        if actor != league.organizer
+                            || members.len() > 10000
+                            || members.iter().any(|m| !ctx.core.members.contains_key(m))
+                        {
+                            return Err(Error::Denied);
+                        }
+                        if automatic {
+                            if !league.teams.is_empty() {
+                                return Err(Error::Denied);
+                            }
+                            let mut groups = BTreeMap::<String, Vec<String>>::new();
+                            for member in &members {
+                                let club = if league.rules.cross_club {
+                                    String::new()
+                                } else {
+                                    ctx.core.members[member].club.clone()
+                                };
+                                groups.entry(club).or_default().push(member.clone());
+                            }
+                            for group in groups.values() {
+                                for chunk in group.chunks(league.rules.seats) {
+                                    let captain = chunk.first().ok_or(Error::Denied)?.clone();
+                                    let team = format!("auto-{}", digest(captain.as_bytes()));
+                                    league.teams.insert(
+                                        team,
+                                        Team {
+                                            captain,
+                                            members: chunk.iter().cloned().collect(),
+                                            invited: Default::default(),
+                                            registered: true,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        league.admitted = Some(members);
+                    }
                     LeagueAction::CreateTeam { team, .. } => {
                         league.registration()?;
                         league.registration_window(now)?;
@@ -418,11 +468,21 @@ impl LeagueState {
                         league.random_seed = seed;
                         league.phase = Phase::Playing;
                         for (id, team) in &league.teams {
-                            if team.registered {
+                            if team.registered
+                                && team.members.iter().any(|m| {
+                                    league.admitted.as_ref().is_none_or(|set| set.contains(m))
+                                })
+                            {
                                 league.seats.insert(id.clone(), Vec::new());
                                 league.team_scores.insert(id.clone(), 0);
                                 for player in &team.members {
-                                    league.player_scores.insert(player.clone(), 0);
+                                    if league
+                                        .admitted
+                                        .as_ref()
+                                        .is_none_or(|set| set.contains(player))
+                                    {
+                                        league.player_scores.insert(player.clone(), 0);
+                                    }
                                 }
                             }
                         }
@@ -557,7 +617,11 @@ impl League {
                 let mut candidates: Vec<_> = self.teams[team_id]
                     .members
                     .iter()
-                    .filter(|p| self.online.contains(*p) && !selected.contains(p))
+                    .filter(|p| {
+                        self.online.contains(*p)
+                            && !selected.contains(p)
+                            && self.admitted.as_ref().is_none_or(|set| set.contains(*p))
+                    })
                     .cloned()
                     .collect();
                 if candidates.is_empty() {
