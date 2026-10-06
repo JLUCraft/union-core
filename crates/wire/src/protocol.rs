@@ -169,7 +169,6 @@ pub struct LlmAttachment {
     pub mime: String,
     pub data: String,
 }
-
 /// Game-independent instance binding, consumed by external adapters.
 pub const GAME_SESSION_FILE: &str = "union-game-session.json";
 pub const GAME_ADAPTER_VERSION: u32 = 1;
@@ -799,6 +798,29 @@ impl From<&str> for ClientFailure {
     }
 }
 
+/// Private push subscriptions travel only over an authorized service stream, never the public office journal.
+pub const OFFICE_PUSH_PROTOCOL: &str = "/jlucraft/office-push/1";
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OfficePushRequest {
+    Info,
+    Subscribe {
+        endpoint: String,
+        p256dh: String,
+        auth: String,
+    },
+    Verify {
+        challenge: String,
+    },
+    Unsubscribe,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OfficePushResponse {
+    pub ok: bool,
+    pub vapid: String,
+    pub error: Option<String>,
+}
+
 /// Supported office attachments. Detection is based on content, never a client filename.
 pub fn llm_document_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"%PDF-") {
@@ -856,3 +878,4 @@ pub async fn read_llm_request(reader: &mut (impl AsyncRead + Unpin)) -> Result<L
         }
     }
     Err(Error::Capacity)
+}

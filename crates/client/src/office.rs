@@ -113,3 +113,38 @@ async fn apply_with_identity(
     .state
     .ok_or(Error::Denied)
 }
+
+pub async fn push(
+    node: &Node,
+    peer: PeerId,
+    request: &wire::protocol::OfficePushRequest,
+) -> Result<wire::protocol::OfficePushResponse> {
+    let service = node
+        .list_services(peer)
+        .await?
+        .into_iter()
+        .find(|r| r.protocol == wire::protocol::OFFICE_PUSH_PROTOCOL)
+        .ok_or(Error::NotFound)?
+        .id
+        .parse()
+        .map_err(|_| Error::Denied)?;
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let mut stream = node.open_service(peer, service).await?;
+        wire::protocol::write_frame(
+            &mut stream,
+            &wire::protocol::JsonFrame {
+                json: serde_json::to_vec(request).map_err(|e| Error::Protocol(e.to_string()))?,
+                sequence: 0,
+                last: true,
+            },
+        )
+        .await?;
+        let frame: wire::protocol::JsonFrame = wire::protocol::read_frame(&mut stream).await?;
+        if frame.sequence != 0 || !frame.last {
+            return Err(Error::Denied);
+        }
+        serde_json::from_slice(&frame.json).map_err(|e| Error::Protocol(e.to_string()))
+    })
+    .await
+    .map_err(|_| Error::Protocol("push registration timed out".into()))?
+}

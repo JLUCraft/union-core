@@ -49,6 +49,7 @@ pub struct Stage {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Approver {
     Ai {
+        mode: AiMode,
         worker: String,
         model: String,
         purpose: String,
@@ -81,11 +82,14 @@ pub enum Status {
     Approved,
     Executed,
     Rejected,
+    ChangesRequested,
     Cancelled,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(bound = "")]
 pub struct Instance<D: Domain> {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Template>,
     pub template: String,
     pub template_epoch: u64,
     pub payload: D::Action,
@@ -111,6 +115,8 @@ pub struct StageRecord {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AiRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<AiReview>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub retry_requested: bool,
     pub job: String,
@@ -120,6 +126,7 @@ pub struct AiRun {
 }
 #[derive(Clone, Debug)]
 pub struct AiJob {
+    pub mode: AiMode,
     pub instance: String,
     pub job: String,
     pub attempt: usize,
@@ -130,6 +137,50 @@ pub struct AiJob {
     pub privacy: wire::protocol::Privacy,
     pub max_tokens: u32,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiMode {
+    Generate,
+    Review,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiDecision {
+    Approve,
+    ChangesRequested,
+    Reject,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AiReview {
+    pub decision: AiDecision,
+    pub summary: String,
+    pub issues: Vec<String>,
+}
+const MAX_REVIEW_TEXT_BYTES: usize = 4096;
+const MAX_REVIEW_ISSUES: usize = 32;
+
+/// The worker and deterministic replay use the same output contract.
+pub fn validate_ai_output(mode: AiMode, bytes: &[u8]) -> Result<Option<AiReview>> {
+    let content = std::str::from_utf8(bytes).map_err(|_| Error::Denied)?;
+    if content.trim().is_empty() {
+        return Err(Error::Denied);
+    }
+    if mode == AiMode::Generate {
+        return Ok(None);
+    }
+    let review: AiReview = serde_json::from_str(content).map_err(|_| Error::Denied)?;
+    let valid_text = |s: &str| !s.trim().is_empty() && s.len() <= MAX_REVIEW_TEXT_BYTES;
+    if !valid_text(&review.summary)
+        || review.issues.len() > MAX_REVIEW_ISSUES
+        || review.issues.iter().any(|s| !valid_text(s))
+        || (review.decision != AiDecision::Approve && review.issues.is_empty())
+    {
+        return Err(Error::Denied);
+    }
+    Ok(Some(review))
+}
+
 const MAX_AI_ATTEMPTS: usize = 8;
 fn is_false(value: &bool) -> bool {
     !*value
@@ -167,6 +218,13 @@ pub enum FlowAction<D: Domain> {
     InstallTemplate { id: String, template: Template },
     #[serde(rename = "flows.retire_template")]
     RetireTemplate { id: String },
+    #[serde(rename = "flows.start_requirements")]
+    StartRequirements {
+        id: String,
+        payload: D::Action,
+        input: wire::protocol::Cid,
+        stage: Stage,
+    },
     #[serde(rename = "flows.start")]
     Start {
         id: String,
@@ -253,9 +311,16 @@ fn threshold(approver: &Approver) -> Result<usize> {
     })
 }
 fn approved(stage: &Stage, record: &StageRecord, core: CoreView<'_>) -> Result<bool> {
-    if let Approver::Ai { worker, .. } = &stage.approver {
+    if let Approver::Ai { worker, mode, .. } = &stage.approver {
         return Ok(record.ai_runs.last().is_some_and(|run| {
             run.output.is_some()
+                && match mode {
+                    AiMode::Generate => run.review.is_none(),
+                    AiMode::Review => run
+                        .review
+                        .as_ref()
+                        .is_some_and(|r| r.decision == AiDecision::Approve),
+                }
                 && run.error.is_none()
                 && member(core, &run.device).is_some_and(|(id, _)| id == worker)
         }));
@@ -305,7 +370,7 @@ fn validate_template(template: &Template, core: CoreView<'_>) -> Result<()> {
                 if !core.members.contains_key(worker)
                     || *max_tokens == 0
                     || *max_tokens > 8192
-                    || stage.on_timeout == TimeoutPolicy::AutoApprove
+                    || stage.on_timeout != TimeoutPolicy::Reject
                 {
                     return Err(Error::Denied);
                 }
@@ -336,10 +401,25 @@ fn validate_template(template: &Template, core: CoreView<'_>) -> Result<()> {
     }
     Ok(())
 }
-fn template_for<'a, D: Domain>(
+/// An active flow whose stage deadline has not yet passed.
+fn live_flow<'a, D: Domain>(
+    flows: &'a mut BTreeMap<String, Instance<D>>,
+    id: &str,
+    now_ms: u64,
+) -> Result<&'a mut Instance<D>> {
+    let flow = flows.get_mut(id).ok_or(Error::NotFound)?;
+    if flow.status != Status::Active || flow.deadline_ms.is_some_and(|t| now_ms >= t) {
+        return Err(Error::Denied);
+    }
+    Ok(flow)
+}
+pub fn template_for<'a, D: Domain>(
     templates: &'a BTreeMap<String, Versions>,
-    flow: &Instance<D>,
+    flow: &'a Instance<D>,
 ) -> Result<&'a Template> {
+    if let Some(workflow) = &flow.workflow {
+        return Ok(workflow);
+    }
     let index = usize::try_from(flow.template_epoch)
         .map_err(|_| Error::Denied)?
         .checked_sub(1)
@@ -411,42 +491,52 @@ impl<D: Domain> Domain for Flows<D> {
                 payload,
                 input,
             } => {
-                let (proposer, _) = ctx.member()?;
-                text(&id)?;
-                if state.flows.contains_key(&id) || state.flows.len() >= MAX_RECORDS {
-                    return Err(Error::Capacity);
-                }
                 let versions = state.flow_templates.get(&template).ok_or(Error::NotFound)?;
-                let version = versions.versions.last().ok_or(Error::NotFound)?;
-                if !versions.active || !version.payload_kinds.contains(&kind(&payload)?) {
+                if !versions.active {
                     return Err(Error::Denied);
                 }
-                if version
-                    .stages
-                    .iter()
-                    .any(|s| matches!(s.approver, Approver::Ai { .. }))
-                {
-                    D::artifact(
-                        &state.inner,
-                        &input.as_ref().ok_or(Error::Denied)?.to_string(),
-                    )?;
-                }
-                let first = version.stages.first().ok_or(Error::Denied)?;
-                state.flows.insert(
-                    id,
-                    Instance {
-                        template,
-                        template_epoch: versions.versions.len() as u64,
+                let definition = versions.versions.last().ok_or(Error::NotFound)?.clone();
+                let epoch = versions.versions.len() as u64;
+                begin(
+                    state,
+                    ctx,
+                    StartDefinition {
+                        id,
                         payload,
                         input,
-                        proposer: proposer.into(),
-                        proposer_device: ctx.actor.into(),
-                        current: 0,
-                        records: vec![StageRecord::default(); version.stages.len()],
-                        status: Status::Active,
-                        deadline_ms: deadline(first, ctx.now_ms)?,
+                        definition,
+                        reference: Some((template, epoch)),
                     },
-                );
+                )?;
+            }
+            FlowAction::StartRequirements {
+                id,
+                payload,
+                input,
+                stage,
+            } => {
+                let worker = D::workflow_worker(&state.inner, &payload).ok_or(Error::Denied)?;
+                if ctx.member()?.0 != worker
+                    || !matches!(&stage.approver,Approver::Ai{worker:owner,..} if owner==&worker)
+                {
+                    return Err(Error::Denied);
+                }
+                let definition = Template {
+                    name: kind(&payload)?,
+                    payload_kinds: [kind(&payload)?].into(),
+                    stages: vec![stage],
+                };
+                begin(
+                    state,
+                    ctx,
+                    StartDefinition {
+                        id,
+                        payload,
+                        input: Some(input),
+                        definition,
+                        reference: None,
+                    },
+                )?;
             }
             FlowAction::ClaimAi {
                 instance,
@@ -465,6 +555,7 @@ impl<D: Domain> Domain for Flows<D> {
                     return Err(Error::Denied);
                 }
                 flow.records[flow.current].ai_runs.push(AiRun {
+                    review: None,
                     retry_requested: false,
                     job,
                     device: ctx.actor.into(),
@@ -486,16 +577,31 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     return Err(Error::Denied);
                 }
-                if let Some(cid) = &output {
-                    D::artifact(&state.inner, &cid.to_string())?;
-                }
-                let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
-                if flow.status != Status::Active
-                    || flow.deadline_ms.is_some_and(|t| ctx.now_ms >= t)
-                {
+                let flow = state.flows.get(&instance).ok_or(Error::NotFound)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
+                let Approver::Ai { mode, .. } = template
+                    .stages
+                    .get(flow.current)
+                    .ok_or(Error::Denied)?
+                    .approver
+                else {
                     return Err(Error::Denied);
-                }
-                let template = template_for(&state.flow_templates, flow)?;
+                };
+                let review = output
+                    .as_ref()
+                    .map(|cid| {
+                        if mode == AiMode::Review
+                            && D::review_artifact(&state.inner, &flow.payload)?
+                                != flow.input.as_ref().ok_or(Error::Denied)?.to_string()
+                        {
+                            return Err(Error::Denied);
+                        }
+                        validate_ai_output(mode, &D::artifact(&state.inner, &cid.to_string())?)
+                    })
+                    .transpose()?
+                    .flatten();
+                let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
                 let Approver::Ai { worker, .. } = &template.stages[flow.current].approver else {
                     return Err(Error::Denied);
                 };
@@ -516,10 +622,22 @@ impl<D: Domain> Domain for Flows<D> {
                     return Err(Error::Denied);
                 }
                 let success = output.is_some();
+                let decision = review.as_ref().map(|r| r.decision);
+                run.review = review;
                 run.output = output;
                 run.error = error;
                 if success {
-                    advance(flow, template, ctx.now_ms)?;
+                    match decision {
+                        Some(AiDecision::ChangesRequested) => {
+                            flow.status = Status::ChangesRequested;
+                            flow.deadline_ms = None;
+                        }
+                        Some(AiDecision::Reject) => {
+                            flow.status = Status::Rejected;
+                            flow.deadline_ms = None;
+                        }
+                        _ => advance(flow, &template, ctx.now_ms)?,
+                    }
                 }
             }
             FlowAction::RetryAi { instance } => {
@@ -530,7 +648,7 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     return Err(Error::Denied);
                 }
-                let template = template_for(&state.flow_templates, flow)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
                 if !matches!(template.stages[flow.current].approver, Approver::Ai { .. }) {
                     return Err(Error::Denied);
                 }
@@ -539,13 +657,10 @@ impl<D: Domain> Domain for Flows<D> {
                     return Err(Error::Capacity);
                 }
                 let run = runs.last_mut().ok_or(Error::Denied)?;
-                if run.output.is_some() || run.retry_requested {
+                if run.output.is_some() || run.error.is_none() || run.retry_requested {
                     return Err(Error::Denied);
                 }
                 run.retry_requested = true;
-                if run.error.is_none() {
-                    run.error = Some("superseded by an explicit retry".into());
-                }
             }
             action @ (FlowAction::Approve { .. } | FlowAction::Reject { .. }) => {
                 let (instance, comment_hash, reject) = match action {
@@ -557,13 +672,8 @@ impl<D: Domain> Domain for Flows<D> {
                     _ => return Err(Error::Denied),
                 };
                 wire::protocol::validate_digest(&comment_hash)?;
-                let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
-                if flow.status != Status::Active
-                    || flow.deadline_ms.is_some_and(|t| ctx.now_ms >= t)
-                {
-                    return Err(Error::Denied);
-                }
-                let template = template_for(&state.flow_templates, flow)?;
+                let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
                 let stage = template.stages.get(flow.current).ok_or(Error::Denied)?;
                 let record = flow.records.get_mut(flow.current).ok_or(Error::Denied)?;
                 let slot = authorized(&stage.approver, ctx.core, record, ctx.actor)?;
@@ -584,18 +694,13 @@ impl<D: Domain> Domain for Flows<D> {
                     }
                     record.approvals.insert(slot, receipt);
                     if approved(stage, record, ctx.core)? {
-                        advance(flow, template, ctx.now_ms)?;
+                        advance(flow, &template, ctx.now_ms)?;
                     }
                 }
             }
             FlowAction::Delegate { instance, to } => {
-                let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
-                if flow.status != Status::Active
-                    || flow.deadline_ms.is_some_and(|t| ctx.now_ms >= t)
-                {
-                    return Err(Error::Denied);
-                }
-                let template = template_for(&state.flow_templates, flow)?;
+                let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
                 let stage = template.stages.get(flow.current).ok_or(Error::Denied)?;
                 let record = flow.records.get_mut(flow.current).ok_or(Error::Denied)?;
                 let (from_id, from) = ctx.member()?;
@@ -624,7 +729,7 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     return Err(Error::Denied);
                 }
-                let template = template_for(&state.flow_templates, flow)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
                 let stage = template.stages.get(flow.current).ok_or(Error::Denied)?;
                 let record = flow.records.get_mut(flow.current).ok_or(Error::Denied)?;
                 if let Some(run) = record.ai_runs.last_mut()
@@ -640,11 +745,11 @@ impl<D: Domain> Domain for Flows<D> {
                     }
                     TimeoutPolicy::Escalate => {
                         record.escalated = true;
-                        advance(flow, template, ctx.now_ms)?;
+                        advance(flow, &template, ctx.now_ms)?;
                     }
                     TimeoutPolicy::AutoApprove => {
                         record.auto_approved = true;
-                        advance(flow, template, ctx.now_ms)?;
+                        advance(flow, &template, ctx.now_ms)?;
                     }
                 }
             }
@@ -678,7 +783,7 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     return Err(Error::Denied);
                 }
-                let template = template_for(&state.flow_templates, flow)?;
+                let template = template_for(&state.flow_templates, flow)?.clone();
                 if !template.payload_kinds.contains(&kind(&flow.payload)?) {
                     return Err(Error::Denied);
                 }
@@ -697,7 +802,19 @@ impl<D: Domain> Domain for Flows<D> {
                     core: ctx.core,
                     approved: true,
                 };
-                D::transition(&mut state.inner, &approved_ctx, flow.payload.clone())?;
+                let artifact = flow.records.iter().rev().find_map(|r| {
+                    r.ai_runs
+                        .last()
+                        .filter(|r| r.review.is_none())
+                        .and_then(|r| r.output.as_ref())
+                        .map(ToString::to_string)
+                });
+                D::transition_with_artifact(
+                    &mut state.inner,
+                    &approved_ctx,
+                    flow.payload.clone(),
+                    artifact,
+                )?;
                 flow.status = Status::Executed;
             }
         }
@@ -711,8 +828,9 @@ pub fn ai_job<D: Domain>(state: &FlowsState<D>, id: &str) -> Result<Option<AiJob
     if flow.status != Status::Active {
         return Ok(None);
     }
-    let template = template_for(&state.flow_templates, flow)?;
+    let template = template_for(&state.flow_templates, flow)?.clone();
     let Approver::Ai {
+        mode,
         worker,
         model,
         purpose,
@@ -726,12 +844,26 @@ pub fn ai_job<D: Domain>(state: &FlowsState<D>, id: &str) -> Result<Option<AiJob
     if runs.len() >= MAX_AI_ATTEMPTS || runs.last().is_some_and(|r| !r.retry_requested) {
         return Ok(None);
     }
-    let input = flow.records[..flow.current]
-        .iter()
-        .rev()
-        .find_map(|r| r.ai_runs.last().and_then(|r| r.output.clone()))
-        .or_else(|| flow.input.clone())
-        .ok_or(Error::Denied)?;
+    let input = if *mode == AiMode::Review {
+        let expected = D::review_artifact(&state.inner, &flow.payload)?;
+        let input = flow.input.clone().ok_or(Error::Denied)?;
+        if input.to_string() != expected {
+            return Err(Error::Denied);
+        }
+        input
+    } else {
+        flow.records[..flow.current]
+            .iter()
+            .rev()
+            .find_map(|r| {
+                r.ai_runs
+                    .last()
+                    .filter(|r| r.review.is_none())
+                    .and_then(|r| r.output.clone())
+            })
+            .or_else(|| flow.input.clone())
+            .ok_or(Error::Denied)?
+    };
     let bytes = serde_json::to_vec(&(
         id,
         &flow.template,
@@ -743,6 +875,7 @@ pub fn ai_job<D: Domain>(state: &FlowsState<D>, id: &str) -> Result<Option<AiJob
     ))
     .map_err(|e| Error::Protocol(e.to_string()))?;
     Ok(Some(AiJob {
+        mode: *mode,
         instance: id.into(),
         job: wire::protocol::digest(&bytes),
         attempt: runs.len(),
@@ -753,4 +886,90 @@ pub fn ai_job<D: Domain>(state: &FlowsState<D>, id: &str) -> Result<Option<AiJob
         privacy: *privacy,
         max_tokens: *max_tokens,
     }))
+}
+
+struct StartDefinition<D: Domain> {
+    id: String,
+    payload: D::Action,
+    input: Option<wire::protocol::Cid>,
+    definition: Template,
+    reference: Option<(String, u64)>,
+}
+fn begin<D: Domain>(
+    state: &mut FlowsState<D>,
+    ctx: &Context<'_>,
+    spec: StartDefinition<D>,
+) -> Result<()> {
+    let StartDefinition {
+        id,
+        payload,
+        input,
+        definition,
+        reference,
+    } = spec;
+    let (proposer, _) = ctx.member()?;
+    text(&id)?;
+    if state.flows.contains_key(&id) || state.flows.len() >= MAX_RECORDS {
+        return Err(Error::Capacity);
+    }
+    let version = &definition;
+    validate_template(version, ctx.core)?;
+    if !version.payload_kinds.contains(&kind(&payload)?) {
+        return Err(Error::Denied);
+    }
+    if D::requires_ai_review(&state.inner, &payload)
+        && !version.stages.iter().any(|s| {
+            matches!(
+                s.approver,
+                Approver::Ai {
+                    mode: AiMode::Review,
+                    ..
+                }
+            )
+        })
+    {
+        return Err(Error::Denied);
+    }
+    if version
+        .stages
+        .iter()
+        .any(|s| matches!(s.approver, Approver::Ai { .. }))
+    {
+        D::artifact(
+            &state.inner,
+            &input.as_ref().ok_or(Error::Denied)?.to_string(),
+        )?;
+    }
+    if version.stages.iter().any(|s| {
+        matches!(
+            s.approver,
+            Approver::Ai {
+                mode: AiMode::Review,
+                ..
+            }
+        )
+    }) {
+        let expected = D::review_artifact(&state.inner, &payload)?;
+        if input.as_ref().map(ToString::to_string).as_deref() != Some(expected.as_str()) {
+            return Err(Error::Denied);
+        }
+    }
+    let first = version.stages.first().ok_or(Error::Denied)?;
+    state.flows.insert(
+        id,
+        Instance {
+            workflow: reference.is_none().then(|| definition.clone()),
+            template: reference.as_ref().map_or_else(String::new, |r| r.0.clone()),
+            template_epoch: reference.as_ref().map_or(0, |r| r.1),
+            payload,
+            input,
+            proposer: proposer.into(),
+            proposer_device: ctx.actor.into(),
+            current: 0,
+            records: vec![StageRecord::default(); version.stages.len()],
+            status: Status::Active,
+            deadline_ms: deadline(first, ctx.now_ms)?,
+        },
+    );
+    Ok(())
 }

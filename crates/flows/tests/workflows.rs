@@ -31,6 +31,7 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
         Stage {
             name: "summary".into(),
             approver: Approver::Ai {
+                mode: flows::AiMode::Generate,
                 worker: "bob".into(),
                 model: "local".into(),
                 purpose: "events.summary".into(),
@@ -672,4 +673,251 @@ fn changing_the_brief_invalidates_an_already_approved_flow() {
         h.journal.state().domain.inner.events["event"].phase,
         Phase::Review
     );
+}
+
+fn review_stage(mode: flows::AiMode) -> Stage {
+    Stage {
+        name: "automatic".into(),
+        approver: Approver::Ai {
+            mode,
+            worker: "bob".into(),
+            model: "local".into(),
+            purpose: "events.review".into(),
+            privacy: wire::protocol::Privacy::Sensitive,
+            max_tokens: 512,
+        },
+        timeout_ms: Some(1000),
+        on_timeout: TimeoutPolicy::Reject,
+    }
+}
+impl Harness {
+    fn file(&mut self, content: &[u8]) -> wire::protocol::Cid {
+        let (cid, blocks) = self
+            .journal
+            .state()
+            .domain
+            .inner
+            .files
+            .version(None, content)
+            .unwrap();
+        for block in blocks {
+            self.run(1, A::Domain(F::Inner(E::PutBlock { block })))
+                .unwrap();
+        }
+        cid
+    }
+    fn review_flow(&mut self) -> wire::protocol::Cid {
+        let input = self.file(b"Actual event plan");
+        self.run(
+            1,
+            A::Domain(F::Inner(E::Amend {
+                id: "event".into(),
+                brief_hash: input.to_string(),
+            })),
+        )
+        .unwrap();
+        self.run(1, A::Domain(F::Inner(E::Submit { id: "event".into() })))
+            .unwrap();
+        self.install(vec![review_stage(flows::AiMode::Review)]);
+        self.start_review("review", input.clone());
+        input
+    }
+    fn start_review(&mut self, id: &str, input: wire::protocol::Cid) {
+        let epoch = self.journal.state().domain.inner.events["event"].epoch;
+        self.run(
+            1,
+            A::Domain(F::Start {
+                id: id.into(),
+                template: "joint".into(),
+                input: Some(input),
+                payload: E::Approve {
+                    id: "event".into(),
+                    epoch,
+                    co_organizers: Default::default(),
+                },
+            }),
+        )
+        .unwrap();
+    }
+    fn claim(&mut self, id: &str) -> flows::AiJob {
+        let job = flows::ai_job(&self.journal.state().domain, id)
+            .unwrap()
+            .unwrap();
+        self.run(
+            2,
+            A::Domain(F::ClaimAi {
+                instance: id.into(),
+                job: job.job.clone(),
+                attempt: job.attempt,
+            }),
+        )
+        .unwrap();
+        job
+    }
+    fn finish(&mut self, job: &flows::AiJob, output: wire::protocol::Cid) -> Result<()> {
+        self.run(
+            2,
+            A::Domain(F::FinishAi {
+                instance: job.instance.clone(),
+                job: job.job.clone(),
+                attempt: job.attempt,
+                output: Some(output),
+                error: None,
+            }),
+        )
+    }
+}
+
+#[test]
+fn review_decisions_control_execution_and_survive_replay() {
+    for (decision, expected) in [
+        ("approve", Status::Approved),
+        ("changes_requested", Status::ChangesRequested),
+        ("reject", Status::Rejected),
+    ] {
+        let mut h = Harness::new();
+        h.review_flow();
+        let job = h.claim("review");
+        let output = h.file(serde_json::to_string(&serde_json::json!({"decision":decision,"summary":"Review result","issues":["Check consent documents"]})).unwrap().as_bytes());
+        h.finish(&job, output.clone()).unwrap();
+        assert_eq!(h.journal.state().domain.flows["review"].status, expected);
+        assert!(h.finish(&job, output).is_err());
+        assert!(
+            h.run(
+                1,
+                A::Domain(F::RetryAi {
+                    instance: "review".into()
+                })
+            )
+            .is_err()
+        );
+        let execution = h.run(
+            1,
+            A::Domain(F::Execute {
+                instance: "review".into(),
+            }),
+        );
+        assert_eq!(execution.is_ok(), expected == Status::Approved);
+        let state = h.journal.state().clone();
+        drop(h.journal);
+        assert_eq!(
+            Journal::<Office>::open(&h.path, h.genesis).unwrap().state(),
+            &state
+        );
+    }
+}
+
+#[test]
+fn review_rejects_invalid_outputs_substituted_inputs_and_stale_material() {
+    let mut h = Harness::new();
+    let input = h.review_flow();
+    let job = h.claim("review");
+    h.denied(
+        1,
+        A::Domain(F::RetryAi {
+            instance: "review".into(),
+        }),
+    );
+    for body in [
+        "approved",
+        "{}",
+        r#"{"decision":"approve","summary":"","issues":[]}"#,
+        r#"{"decision":"reject","summary":"No","issues":[]}"#,
+        r#"{"decision":"approve","summary":"OK","issues":[],"action":"events.approve"}"#,
+    ] {
+        let output = h.file(body.as_bytes());
+        let before = h.journal.state().clone();
+        assert!(h.finish(&job, output).is_err());
+        assert_eq!(h.journal.state(), &before);
+    }
+    let other = h.file(b"Unrelated material");
+    h.denied(
+        1,
+        A::Domain(F::Start {
+            id: "substituted".into(),
+            template: "joint".into(),
+            input: Some(other.clone()),
+            payload: E::Approve {
+                id: "event".into(),
+                epoch: 2,
+                co_organizers: Default::default(),
+            },
+        }),
+    );
+    let output = h.file(br#"{"decision":"approve","summary":"OK","issues":[]}"#);
+    h.run(
+        1,
+        A::Domain(F::Inner(E::Amend {
+            id: "event".into(),
+            brief_hash: other.to_string(),
+        })),
+    )
+    .unwrap();
+    h.run(1, A::Domain(F::Inner(E::Submit { id: "event".into() })))
+        .unwrap();
+    assert!(h.finish(&job, output).is_err());
+    h.denied(
+        1,
+        A::Domain(F::Start {
+            id: "stale".into(),
+            template: "joint".into(),
+            input: Some(input),
+            payload: E::Approve {
+                id: "event".into(),
+                epoch: 2,
+                co_organizers: Default::default(),
+            },
+        }),
+    );
+}
+
+#[test]
+fn review_uses_authoritative_plan_and_never_feeds_verdict_to_generation() {
+    let mut h = Harness::new();
+    let input = h.review_flow();
+    h.install(vec![
+        review_stage(flows::AiMode::Generate),
+        review_stage(flows::AiMode::Review),
+        review_stage(flows::AiMode::Generate),
+    ]);
+    h.start_review("pipeline", input.clone());
+    let first = h.claim("pipeline");
+    let generated = h.file(b"Generated draft");
+    h.finish(&first, generated.clone()).unwrap();
+    let review = h.claim("pipeline");
+    assert_eq!(review.input, input);
+    let verdict = h.file(br#"{"decision":"approve","summary":"OK","issues":[]}"#);
+    h.finish(&review, verdict).unwrap();
+    assert_eq!(h.claim("pipeline").input, generated);
+}
+
+#[test]
+fn ai_timeouts_cannot_skip_review_and_cancelled_results_cannot_advance() {
+    let mut h = Harness::new();
+    h.review_flow();
+    for policy in [TimeoutPolicy::AutoApprove, TimeoutPolicy::Escalate] {
+        let mut automatic = review_stage(flows::AiMode::Review);
+        automatic.on_timeout = policy;
+        h.denied(
+            0,
+            A::Domain(F::InstallTemplate {
+                id: "unsafe".into(),
+                template: Template {
+                    name: "Unsafe".into(),
+                    stages: vec![automatic, stage(role(), TimeoutPolicy::Reject)],
+                    payload_kinds: ["events.approve".into()].into(),
+                },
+            }),
+        );
+    }
+    let job = h.claim("review");
+    let output = h.file(br#"{"decision":"approve","summary":"OK","issues":[]}"#);
+    h.run(
+        1,
+        A::Domain(F::Cancel {
+            instance: "review".into(),
+        }),
+    )
+    .unwrap();
+    assert!(h.finish(&job, output).is_err());
 }

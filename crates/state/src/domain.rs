@@ -33,6 +33,25 @@ pub trait Domain:
     fn artifact(_state: &Self::State, _cid: &str) -> Result<Vec<u8>> {
         Err(Error::NotFound)
     }
+    /// Resolve the authoritative material for a review of this action.
+    /// Domains opt in explicitly; an arbitrary caller-supplied file is not review evidence.
+    fn review_artifact(_state: &Self::State, _action: &Self::Action) -> Result<String> {
+        Err(Error::Denied)
+    }
+    fn workflow_worker(_state: &Self::State, _action: &Self::Action) -> Option<String> {
+        None
+    }
+    fn requires_ai_review(_state: &Self::State, _action: &Self::Action) -> bool {
+        false
+    }
+    fn transition_with_artifact(
+        state: &mut Self::State,
+        ctx: &Context<'_>,
+        action: Self::Action,
+        _artifact: Option<String>,
+    ) -> Result<()> {
+        Self::transition(state, ctx, action)
+    }
     fn transition(state: &mut Self::State, ctx: &Context<'_>, action: Self::Action) -> Result<()>;
 }
 

@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Deterministic event planning and replicated IPLD file history.
 pub mod files;
+pub mod workflows;
 use serde::{Deserialize, Serialize};
 use state::{Context, Domain};
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +12,8 @@ const MAX_RECORDS: usize = 10_000;
 pub struct EventsDomain;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EventsState {
+    #[serde(default)]
+    pub office: workflows::OfficeState,
     #[serde(default, skip_serializing_if = "files::FileStore::is_empty")]
     pub files: files::FileStore,
     #[serde(default)]
@@ -108,6 +111,8 @@ pub enum EventAction {
     Checkin { id: String },
     #[serde(rename = "events.cancel")]
     CancelSignup { id: String },
+    #[serde(untagged)]
+    Office(workflows::OfficeAction),
 }
 fn text(s: &str, max: usize) -> Result<()> {
     if s.trim().is_empty() || s.len() > max || s.chars().any(char::is_control) {
@@ -133,10 +138,57 @@ impl Domain for EventsDomain {
     fn artifact(state: &Self::State, cid: &str) -> Result<Vec<u8>> {
         state.files.read(&cid.parse()?)
     }
+    fn review_artifact(state: &Self::State, action: &Self::Action) -> Result<String> {
+        let EventAction::Approve { id, epoch, .. } = action else {
+            return Err(Error::Denied);
+        };
+        let event = state.events.get(id).ok_or(Error::NotFound)?;
+        if event.epoch != *epoch || event.phase != Phase::Review {
+            return Err(Error::Denied);
+        }
+        let cid: wire::protocol::Cid = if let Some(plan) = state.office.plans.get(id) {
+            plan.review_input.clone().ok_or(Error::Denied)?
+        } else {
+            event.brief_hash.parse()?
+        };
+        state.files.read(&cid)?;
+        Ok(cid.to_string())
+    }
+    fn workflow_worker(state: &Self::State, action: &Self::Action) -> Option<String> {
+        match action {
+            EventAction::Approve { id, .. } if state.office.plans.contains_key(id) => {}
+            EventAction::Office(
+                workflows::OfficeAction::Polish { .. }
+                | workflows::OfficeAction::Summary { .. }
+                | workflows::OfficeAction::ReportGenerated { .. },
+            ) => {}
+            _ => return None,
+        }
+        state.office.automation.as_ref().map(|a| a.worker.clone())
+    }
+    fn requires_ai_review(state: &Self::State, action: &Self::Action) -> bool {
+        matches!(action,EventAction::Approve{id,..} if state.office.plans.contains_key(id))
+    }
+    fn transition_with_artifact(
+        state: &mut Self::State,
+        ctx: &Context<'_>,
+        action: Self::Action,
+        artifact: Option<String>,
+    ) -> Result<()> {
+        match action {
+            EventAction::Office(
+                action @ (workflows::OfficeAction::Polish { .. }
+                | workflows::OfficeAction::Summary { .. }
+                | workflows::OfficeAction::ReportGenerated { .. }),
+            ) => workflows::generated(state, ctx, action, artifact.ok_or(Error::Denied)?.parse()?),
+            action => Self::transition(state, ctx, action),
+        }
+    }
     type State = EventsState;
     type Action = EventAction;
     fn transition(state: &mut Self::State, ctx: &Context<'_>, action: Self::Action) -> Result<()> {
         match action {
+            EventAction::Office(action) => workflows::transition(state, ctx, action)?,
             EventAction::PutBlock { block } => {
                 ctx.member()?;
                 state.files.put(block)?;
@@ -205,6 +257,17 @@ impl Domain for EventsDomain {
                 {
                     return Err(Error::Denied);
                 }
+                workflows::ready(state, &id)?;
+                if state.office.plans.get(&id).is_some_and(|p| {
+                    p.schools
+                        .keys()
+                        .filter(|c| **c != state.events[&id].organizer)
+                        .cloned()
+                        .collect::<BTreeSet<_>>()
+                        != co_organizers
+                }) {
+                    return Err(Error::Denied);
+                }
                 let event = state.events.get_mut(&id).ok_or(Error::NotFound)?;
                 if event.phase != Phase::Review || event.epoch != epoch {
                     return Err(Error::Denied);
@@ -223,9 +286,29 @@ impl Domain for EventsDomain {
                     EventAction::CancelEvent { id } => (id, Phase::Cancelled),
                     _ => return Err(Error::Denied),
                 };
+                if target == Phase::Review {
+                    workflows::ready(state, &id)?;
+                }
+                if target == Phase::Done
+                    && state.office.plans.get(&id).is_some_and(|p| {
+                        p.kind == workflows::Kind::Online
+                            && p.selected
+                                .iter()
+                                .any(|g| p.games.get(g).is_none_or(|r| r.results.is_none()))
+                    })
+                {
+                    return Err(Error::Denied);
+                }
                 let event = state.events.get_mut(&id).ok_or(Error::NotFound)?;
                 active(event)?;
-                if !manage(event, ctx) {
+                let worker = state
+                    .office
+                    .plans
+                    .get(&id)
+                    .is_some_and(|p| ctx.member().is_ok_and(|(m, _)| m == p.worker));
+                if !manage(event, ctx)
+                    && !(worker && matches!(target, Phase::Done | Phase::Review | Phase::Open))
+                {
                     return Err(Error::Denied);
                 }
                 let valid = match target {
@@ -259,6 +342,16 @@ impl Domain for EventsDomain {
                 event.epoch = event.epoch.checked_add(1).ok_or(Error::Capacity)?;
                 // Material changes always require a fresh review, including already-published events.
                 event.phase = Phase::Draft;
+                if let Some(plan) = state.office.plans.get_mut(&id) {
+                    if plan.games.values().any(|g| g.reserved || g.started) {
+                        return Err(Error::Denied);
+                    }
+                    plan.final_epoch = None;
+                    plan.polished = None;
+                    plan.review_input = None;
+                    plan.summary = None;
+                    plan.games.clear();
+                }
             }
             EventAction::AddTask {
                 event,
@@ -317,13 +410,25 @@ impl Domain for EventsDomain {
                 task.done = true;
             }
             EventAction::Signup { id } => {
-                let (member, _) = ctx.member()?;
+                let (member, affiliation) = ctx.member()?;
                 let event = state.events.get(&id).ok_or(Error::NotFound)?;
                 if event.phase != Phase::Open
                     || ctx.now_ms < event.window.opens_ms
                     || ctx.now_ms >= event.window.closes_ms
                 {
                     return Err(Error::Denied);
+                }
+                if let Some(p) = state.office.plans.get(&id) {
+                    let school = p.schools.get(&affiliation.club).ok_or(Error::Denied)?;
+                    if p.kind == workflows::Kind::Meeting && !school.participants.contains(member) {
+                        return Err(Error::Denied);
+                    }
+                    state
+                        .office
+                        .enrollment
+                        .entry(id.clone())
+                        .or_default()
+                        .insert(member.into(), affiliation.club.clone());
                 }
                 let members = state.signups.entry(id).or_default();
                 if members.len() >= MAX_RECORDS || !members.insert(member.into()) {
@@ -333,8 +438,16 @@ impl Domain for EventsDomain {
             EventAction::Checkin { id } => {
                 let (member, _) = ctx.member()?;
                 let event = state.events.get(&id).ok_or(Error::NotFound)?;
+                let checkin_window = state
+                    .office
+                    .plans
+                    .get(&id)
+                    .map(|p| (p.checkin_opens_ms, p.checkin_closes_ms));
                 if event.phase != Phase::Open
-                    || ctx.now_ms < event.window.starts_ms
+                    || checkin_window
+                        .map_or(ctx.now_ms < event.window.starts_ms, |(opens, closes)| {
+                            ctx.now_ms < opens || ctx.now_ms >= closes
+                        })
                     || !state
                         .signups
                         .get(&id)
