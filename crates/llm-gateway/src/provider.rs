@@ -70,8 +70,27 @@ impl Backend {
         request: &LlmRequest,
         writer: &mut (impl AsyncWrite + Unpin),
     ) -> Result<(Option<LlmUsage>, bool)> {
+        let mut messages = serde_json::to_value(&request.messages)?;
+        if !request.attachments.is_empty() {
+            let parts: Vec<Value> = request
+                .attachments
+                .iter()
+                .map(|a| {
+                    let url = format!("data:{};base64,{}", a.mime, a.data);
+                    if a.mime == "application/pdf" {
+                        json!({"type":"file","file":{"filename":a.name,"file_data":url}})
+                    } else {
+                        json!({"type":"image_url","image_url":{"url":url}})
+                    }
+                })
+                .collect();
+            messages
+                .as_array_mut()
+                .ok_or(Error::Invalid("invalid messages"))?
+                .push(json!({"role":"user","content":parts}));
+        }
         let mut call = self.client.post(self.url.clone()).json(&json!({
-            "model": request.model, "messages": request.messages,
+            "model": request.model, "messages": messages,
             "max_tokens": request.max_tokens, "stream": true,
             "stream_options": {"include_usage": true}, "n": 1,
         }));

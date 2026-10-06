@@ -1,7 +1,7 @@
-//! Shared text-only LLM client. Partial output survives transport failure.
+//! Shared workflow LLM client. Partial output survives transport failure.
 use crate::{
     Error, Identity, Node, NodeConfig, Result, ServiceId,
-    protocol::{JsonFrame, LlmFrame, LlmRequest, LlmUsage, read_frame, write_frame},
+    protocol::{JsonFrame, LlmFrame, LlmRequest, LlmUsage, read_frame, write_llm_request},
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -35,21 +35,13 @@ pub async fn ask(
     let mut result = Completion::default();
     let exchange = async {
         let mut stream = node.open_service(peer, service).await?;
-        write_frame(
-            &mut stream,
-            &JsonFrame {
-                json: serde_json::to_vec(&request).map_err(protocol)?,
-                last: true,
-                sequence: 0,
-            },
-        )
-        .await?;
+        write_llm_request(&mut stream, &request).await?;
         loop {
             let frame: JsonFrame = read_frame(&mut stream).await?;
             if frame.sequence != 0 || !frame.last {
                 return Err(Error::Protocol("invalid LLM envelope".into()));
             }
-            match serde_json::from_slice::<LlmFrame>(&frame.json).map_err(protocol)? {
+            match serde_json::from_slice::<LlmFrame>(&frame.json).map_err(Error::protocol)? {
                 LlmFrame::Delta { content } => {
                     if result.content.len().saturating_add(content.len()) > MAX_OUTPUT_BYTES {
                         return Err(Error::Capacity);
@@ -75,12 +67,12 @@ pub async fn ask(
 }
 
 pub async fn execute(identity: Identity, input: Input) -> Result<Completion> {
-    let peer = input.peer.parse().map_err(protocol)?;
-    let address: crate::Multiaddr = input.address.parse().map_err(protocol)?;
+    let peer = input.peer.parse().map_err(Error::protocol)?;
+    let address: crate::Multiaddr = input.address.parse().map_err(Error::protocol)?;
     if !matches!(address.iter().last(), Some(crate::AddressProtocol::P2p(id)) if id == peer) {
         return Err(Error::Denied);
     }
-    let service = input.service.parse().map_err(protocol)?;
+    let service = input.service.parse().map_err(Error::protocol)?;
     let node = Node::start(identity, NodeConfig::default()).await?;
     let result = async {
         node.dial(address).await?;
@@ -89,7 +81,4 @@ pub async fn execute(identity: Identity, input: Input) -> Result<Completion> {
     .await;
     node.shutdown().await?;
     result
-}
-fn protocol(error: impl std::fmt::Display) -> Error {
-    Error::Protocol(error.to_string())
 }

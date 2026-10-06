@@ -156,9 +156,27 @@ pub enum Privacy {
     Public,
     Sensitive,
 }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmCapability {
+    Vision,
+    Pdf,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LlmAttachment {
+    pub name: String,
+    pub mime: String,
+    pub data: String,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmRequest {
+    #[serde(default)]
+    pub required_capabilities: std::collections::BTreeSet<LlmCapability>,
+    #[serde(default)]
+    pub attachments: Vec<LlmAttachment>,
     pub model: String,
     pub messages: Vec<LlmMessage>,
     /// Factual payload for purposes whose prompt template the gateway owns;
@@ -768,3 +786,61 @@ impl From<&str> for ClientFailure {
         message.to_owned().into()
     }
 }
+
+/// Supported office attachments. Detection is based on content, never a client filename.
+pub fn llm_document_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") {
+        Some("application/pdf")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// Multi-frame JSON requests allow original PDF/scan evidence without increasing frame size.
+pub const MAX_LLM_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const LLM_CHUNK_BYTES: usize = MAX_FRAME / 2;
+pub async fn write_llm_request(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request: &LlmRequest,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(request).map_err(|e| Error::Protocol(e.to_string()))?;
+    if bytes.len() > MAX_LLM_REQUEST_BYTES {
+        return Err(Error::Capacity);
+    }
+    let count = bytes.len().div_ceil(LLM_CHUNK_BYTES);
+    for (sequence, chunk) in bytes.chunks(LLM_CHUNK_BYTES).enumerate() {
+        write_frame(
+            writer,
+            &JsonFrame {
+                json: chunk.to_vec(),
+                sequence: sequence as u32,
+                last: sequence + 1 == count,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+pub async fn read_llm_request(reader: &mut (impl AsyncRead + Unpin)) -> Result<LlmRequest> {
+    let mut bytes = Vec::new();
+    for sequence in 0..MAX_LLM_REQUEST_BYTES / LLM_CHUNK_BYTES {
+        let frame: JsonFrame = read_frame(reader).await?;
+        if frame.sequence as usize != sequence
+            || frame.json.is_empty()
+            || (!frame.last && frame.json.len() != LLM_CHUNK_BYTES)
+            || bytes.len().saturating_add(frame.json.len()) > MAX_LLM_REQUEST_BYTES
+        {
+            return Err(Error::Denied);
+        }
+        bytes.extend_from_slice(&frame.json);
+        if frame.last {
+            return serde_json::from_slice(&bytes).map_err(|e| Error::Protocol(e.to_string()));
+        }
+    }
+    Err(Error::Capacity)
