@@ -170,6 +170,16 @@ pub struct LlmAttachment {
     pub data: String,
 }
 
+/// Game-independent instance binding, consumed by external adapters.
+pub const GAME_SESSION_FILE: &str = "union-game-session.json";
+pub const GAME_ADAPTER_VERSION: u32 = 1;
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GameSession {
+    pub protocol_version: u32,
+    pub league: String,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmRequest {
@@ -234,6 +244,8 @@ pub enum OpsOp {
     ListInstances {},
     Status { instance: String },
     Start { instance: String },
+    StartLeague { instance: String, league: String },
+    StopLeague { instance: String, league: String },
     Stop { instance: String },
     Restart { instance: String },
     Kill { instance: String },
