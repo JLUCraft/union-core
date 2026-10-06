@@ -25,6 +25,10 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
+    /// Malformed or unacceptable protocol data, keeping only the cause's message.
+    pub fn protocol(cause: impl std::fmt::Display) -> Self {
+        Self::Protocol(cause.to_string())
+    }
     pub fn failure(&self) -> crate::protocol::ClientFailure {
         use crate::protocol::ClientErrorCode as Code;
         let code = match self {

@@ -36,12 +36,9 @@ pub struct Audit<D: Domain> {
     pub baseline: State<D>,
     pub records: Vec<super::Replicated>,
 }
-fn protocol(e: impl std::fmt::Display) -> crate::Error {
-    crate::Error::Protocol(e.to_string())
-}
 fn state_hash<D: Domain>(state: &State<D>) -> crate::Result<String> {
     Ok(crate::protocol::digest(
-        &serde_json::to_vec(state).map_err(protocol)?,
+        &serde_json::to_vec(state).map_err(crate::Error::protocol)?,
     ))
 }
 impl<D: Domain> Machine<D> {
@@ -85,7 +82,10 @@ impl<D: Domain> Machine<D> {
                 &trust,
             )?;
         }
-        if serde_json::to_vec(&next).map_err(protocol)?.len() > crate::journal::MAX_SNAPSHOT - 1024
+        if serde_json::to_vec(&next)
+            .map_err(crate::Error::protocol)?
+            .len()
+            > crate::journal::MAX_SNAPSHOT - 1024
         {
             return Err(Error::Capacity);
         }
@@ -113,8 +113,8 @@ impl<D: Domain> Machine<D> {
             replay.apply_request(request, cluster)?;
         }
         if replay.state != self.state
-            || serde_json::to_vec(&replay.identity).map_err(protocol)?
-                != serde_json::to_vec(&self.identity).map_err(protocol)?
+            || serde_json::to_vec(&replay.identity).map_err(crate::Error::protocol)?
+                != serde_json::to_vec(&self.identity).map_err(crate::Error::protocol)?
         {
             return Err(crate::Error::Denied);
         }

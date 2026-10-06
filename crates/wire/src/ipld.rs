@@ -49,9 +49,9 @@ impl IpldBlock {
     }
     pub fn node(node: &FileNode) -> Result<Self> {
         // Remain canonical even when another crate enables serde_json/preserve_order.
-        let mut value = serde_json::to_value(node).map_err(protocol)?;
+        let mut value = serde_json::to_value(node).map_err(Error::protocol)?;
         value.sort_all_objects();
-        Self::encode(&serde_json::to_vec(&value).map_err(protocol)?, true)
+        Self::encode(&serde_json::to_vec(&value).map_err(Error::protocol)?, true)
     }
     fn encode(bytes: &[u8], dag: bool) -> Result<Self> {
         if bytes.len() > BLOCK_BYTES {
@@ -75,7 +75,7 @@ impl IpldBlock {
             return Err(Error::Denied);
         }
         if !self.cid.is_raw() {
-            let node: FileNode = serde_json::from_slice(&bytes).map_err(protocol)?;
+            let node: FileNode = serde_json::from_slice(&bytes).map_err(Error::protocol)?;
             if Self::node(&node)?.cid != self.cid {
                 return Err(Error::Denied);
             }
@@ -86,11 +86,8 @@ impl IpldBlock {
         if self.cid.is_raw() {
             return Err(Error::Denied);
         }
-        serde_json::from_slice(&self.bytes()?).map_err(protocol)
+        serde_json::from_slice(&self.bytes()?).map_err(Error::protocol)
     }
-}
-fn protocol(e: impl std::fmt::Display) -> Error {
-    Error::Protocol(e.to_string())
 }
 
 #[cfg(test)]

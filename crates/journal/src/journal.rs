@@ -72,13 +72,13 @@ impl<D: Domain> Journal<D> {
             .read(true)
             .write(true)
             .open(path.with_extension("lock"))?;
-        lock.try_lock().map_err(protocol)?;
-        let genesis_hash = digest(&serde_json::to_vec(&genesis).map_err(protocol)?);
+        lock.try_lock().map_err(Error::protocol)?;
+        let genesis_hash = digest(&serde_json::to_vec(&genesis).map_err(Error::protocol)?);
         let entries: Vec<Entry> = if path.exists() {
             if path.metadata()?.len() > 64 * 1024 * 1024 {
                 return Err(Error::Capacity);
             }
-            serde_json::from_slice(&std::fs::read(&path)?).map_err(protocol)?
+            serde_json::from_slice(&std::fs::read(&path)?).map_err(Error::protocol)?
         } else {
             Vec::new()
         };
@@ -87,7 +87,7 @@ impl<D: Domain> Journal<D> {
         let mut previous = genesis_hash.clone();
         for entry in &entries {
             if entry.previous != previous {
-                return Err(protocol("journal chain mismatch"));
+                return Err(Error::protocol("journal chain mismatch"));
             }
             {
                 let history = &entry.identity;
@@ -110,16 +110,16 @@ impl<D: Domain> Journal<D> {
                 )?;
             }
             if entry.version != 1 {
-                return Err(protocol("unsupported journal version"));
+                return Err(Error::protocol("unsupported journal version"));
             }
-            if digest(&serde_json::to_vec(&state).map_err(protocol)?) != entry.state_hash {
-                return Err(protocol("journal state mismatch"));
+            if digest(&serde_json::to_vec(&state).map_err(Error::protocol)?) != entry.state_hash {
+                return Err(Error::protocol("journal state mismatch"));
             }
-            previous = digest(&serde_json::to_vec(entry).map_err(protocol)?);
+            previous = digest(&serde_json::to_vec(entry).map_err(Error::protocol)?);
         }
         let (events, _) = tokio::sync::watch::channel(crate::events::Event {
             revision: state.revision,
-            state_hash: digest(&serde_json::to_vec(&state).map_err(protocol)?),
+            state_hash: digest(&serde_json::to_vec(&state).map_err(Error::protocol)?),
             resync: true,
         });
         Ok(Self {
@@ -144,7 +144,7 @@ impl<D: Domain> Journal<D> {
     fn commit(&mut self, entry: Entry, next: State<D>) -> Result<()> {
         let mut entries = self.entries.clone();
         entries.push(entry);
-        let bytes = serde_json::to_vec(&entries).map_err(protocol)?;
+        let bytes = serde_json::to_vec(&entries).map_err(Error::protocol)?;
         if bytes.len() > 64 * 1024 * 1024 {
             return Err(Error::Capacity);
         }
@@ -163,7 +163,7 @@ impl<D: Domain> Journal<D> {
         self.state = next;
         self.events.send_replace(crate::events::Event {
             revision: self.state.revision,
-            state_hash: digest(&serde_json::to_vec(&self.state).map_err(protocol)?),
+            state_hash: digest(&serde_json::to_vec(&self.state).map_err(Error::protocol)?),
             resync: false,
         });
         #[cfg(unix)]
@@ -214,7 +214,7 @@ pub struct Response<D: Domain> {
 impl<D: Domain> Response<D> {
     #[doc(hidden)]
     pub fn snapshot(state: State<D>, genesis_hash: &str) -> Result<Self> {
-        let state_hash = digest(&serde_json::to_vec(&state).map_err(protocol)?);
+        let state_hash = digest(&serde_json::to_vec(&state).map_err(Error::protocol)?);
         Ok(Self {
             identity_view: None,
             state: Some(state),
@@ -245,7 +245,7 @@ impl<D: Domain> Response<D> {
             (Some(state), None, Some(proof))
                 if proof.genesis_hash == genesis_hash
                     && proof.state_hash
-                        == digest(&serde_json::to_vec(state).map_err(protocol)?) =>
+                        == digest(&serde_json::to_vec(state).map_err(Error::protocol)?) =>
             {
                 Ok(())
             }
@@ -258,13 +258,10 @@ impl<D: Domain> Response<D> {
 pub fn now_ms() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(protocol)?
+        .map_err(Error::protocol)?
         .as_millis()
         .try_into()
-        .map_err(protocol)
-}
-fn protocol(error: impl std::fmt::Display) -> Error {
-    Error::Protocol(error.to_string())
+        .map_err(Error::protocol)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -283,7 +280,7 @@ pub struct TrustedCommand<D: Domain> {
 }
 impl SignedCommand {
     pub fn sign<D: Domain>(identity: &Identity, command: TrustedCommand<D>) -> Result<Self> {
-        let payload = serde_json::to_vec(&command).map_err(protocol)?;
+        let payload = serde_json::to_vec(&command).map_err(Error::protocol)?;
         let signature = identity.sign(&[TRUSTED_DOMAIN, &payload].concat())?;
         Ok(Self {
             payload,
@@ -302,7 +299,7 @@ impl SignedCommand {
         }
         Ok((
             key.to_peer_id().to_string(),
-            serde_json::from_slice(&self.payload).map_err(protocol)?,
+            serde_json::from_slice(&self.payload).map_err(Error::protocol)?,
         ))
     }
 }
@@ -326,7 +323,7 @@ impl<D: Domain> Journal<D> {
             .map(|entry| {
                 serde_json::to_vec(entry)
                     .map(|b| digest(&b))
-                    .map_err(protocol)
+                    .map_err(Error::protocol)
             })
             .unwrap_or_else(|| Ok(self.genesis_hash.clone()))
     }
@@ -368,7 +365,7 @@ impl<D: Domain> Journal<D> {
             bound.command.action,
             &trust,
         )?;
-        if serde_json::to_vec(&next).map_err(protocol)?.len() > MAX_SNAPSHOT - 1024 {
+        if serde_json::to_vec(&next).map_err(Error::protocol)?.len() > MAX_SNAPSHOT - 1024 {
             return Err(Error::Capacity);
         }
         let entry = Entry {
@@ -376,7 +373,7 @@ impl<D: Domain> Journal<D> {
             previous: self.head()?,
             command,
             time_ms: now,
-            state_hash: digest(&serde_json::to_vec(&next).map_err(protocol)?),
+            state_hash: digest(&serde_json::to_vec(&next).map_err(Error::protocol)?),
             identity: history,
         };
         let revision = next.revision;

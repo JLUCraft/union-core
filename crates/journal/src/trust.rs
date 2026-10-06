@@ -15,11 +15,8 @@ use wire::protocol::{
 const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES: u64 = 1024;
 
-fn protocol(e: impl std::fmt::Display) -> Error {
-    Error::Protocol(e.to_string())
-}
 fn bytes<T: serde::Serialize>(v: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(v).map_err(protocol)
+    serde_json::to_vec(v).map_err(Error::protocol)
 }
 fn parent(path: &Path) -> &Path {
     path.parent()
@@ -115,7 +112,7 @@ impl TrustLog {
             .read(true)
             .write(true)
             .open(path.with_extension("trust-lock"))?;
-        lock.try_lock().map_err(protocol)?;
+        lock.try_lock().map_err(Error::protocol)?;
         let mut state = TrustState::new(genesis, pinned)?;
         let file = OpenOptions::new()
             .create(true)
@@ -137,11 +134,11 @@ impl TrustLog {
                 break;
             }
             if size > MAX_TRUST_RECORD + 1 || line.last() != Some(&b'\n') {
-                return Err(protocol(
+                return Err(Error::protocol(
                     "incomplete identity log; preserve it for recovery",
                 ));
             }
-            let record: TrustRecord = serde_json::from_slice(&line).map_err(protocol)?;
+            let record: TrustRecord = serde_json::from_slice(&line).map_err(Error::protocol)?;
             state.apply(&record)?;
             heads.push(state.checkpoint().head.clone());
             records.push(record);
@@ -152,16 +149,19 @@ impl TrustLog {
                 return Err(Error::Capacity);
             }
             let checkpoint: TrustCheckpoint =
-                serde_json::from_slice(&std::fs::read(&checkpoint_path)?).map_err(protocol)?;
+                serde_json::from_slice(&std::fs::read(&checkpoint_path)?)
+                    .map_err(Error::protocol)?;
             if checkpoint.genesis != pinned
-                || heads.get(usize::try_from(checkpoint.sequence).map_err(protocol)?)
+                || heads.get(usize::try_from(checkpoint.sequence).map_err(Error::protocol)?)
                     != Some(&checkpoint.head)
             {
-                return Err(protocol("identity rollback or fork detected"));
+                return Err(Error::protocol("identity rollback or fork detected"));
             }
         } else if !records.is_empty() {
             // Explicit import is required; deleting the checkpoint is not a reset switch.
-            return Err(protocol("identity checkpoint missing for nonempty log"));
+            return Err(Error::protocol(
+                "identity checkpoint missing for nonempty log",
+            ));
         }
         save_checkpoint(&checkpoint_path, state.checkpoint())?;
         let (updates, _) = watch::channel(Verified {
@@ -234,9 +234,9 @@ impl TrustLog {
         if self.poisoned || checkpoint.genesis != self.state.checkpoint().genesis {
             return Err(Error::Denied);
         }
-        let position = usize::try_from(checkpoint.sequence).map_err(protocol)?;
+        let position = usize::try_from(checkpoint.sequence).map_err(Error::protocol)?;
         if self.heads.get(position) != Some(&checkpoint.head) {
-            return Err(protocol("identity rollback or fork detected"));
+            return Err(Error::protocol("identity rollback or fork detected"));
         }
         Ok(self
             .records

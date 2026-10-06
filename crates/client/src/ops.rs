@@ -17,7 +17,7 @@ pub async fn execute(
     write_frame(
         &mut stream,
         &JsonFrame {
-            json: serde_json::to_vec(request).map_err(protocol)?,
+            json: serde_json::to_vec(request).map_err(Error::protocol)?,
             last: true,
             sequence: 0,
         },
@@ -27,11 +27,7 @@ pub async fn execute(
     if frame.sequence != 0 || !frame.last {
         return Err(Error::Protocol("invalid ops envelope".into()));
     }
-    let response = serde_json::from_slice::<OpsResponse>(&frame.json).map_err(protocol);
+    let response = serde_json::from_slice::<OpsResponse>(&frame.json).map_err(Error::protocol);
     drop(stream);
     response
-}
-
-fn protocol(error: impl std::fmt::Display) -> Error {
-    Error::Protocol(error.to_string())
 }
