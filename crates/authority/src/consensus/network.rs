@@ -218,24 +218,29 @@ pub async fn serve<D: Domain>(cluster: Arc<Cluster<D>>) -> Result<()> {
     }
 }
 
+/// Dial the first reachable address of `peer`, then open the consensus protocol stream.
+async fn open_stream<D: Domain>(cluster: &Cluster<D>, peer: &Peer) -> Result<crate::Stream> {
+    let remote = peer.peer.parse().map_err(super::err)?;
+    for address in &peer.addresses {
+        if cluster
+            .node
+            .dial(address.parse().map_err(super::err)?)
+            .await
+            .is_ok()
+        {
+            break;
+        }
+    }
+    cluster.node.open_protocol(remote, PROTOCOL).await
+}
+
 pub(super) async fn forward_request<T: DeserializeOwned, D: Domain>(
     cluster: &Cluster<D>,
     peer: Peer,
     payload: Rpc,
 ) -> Result<T> {
     let operation = async {
-        let remote = peer.peer.parse().map_err(super::err)?;
-        for address in &peer.addresses {
-            if cluster
-                .node
-                .dial(address.parse().map_err(super::err)?)
-                .await
-                .is_ok()
-            {
-                break;
-            }
-        }
-        let mut stream = cluster.node.open_protocol(remote, PROTOCOL).await?;
+        let mut stream = open_stream(cluster, &peer).await?;
         send(
             &mut stream,
             &Envelope {
@@ -294,18 +299,7 @@ pub(super) async fn validate_clock<D: Domain>(cluster: &Cluster<D>, time_ms: u64
             .clone();
         pending.push(async move {
             let result = async {
-                let remote = peer.peer.parse().map_err(super::err)?;
-                for address in &peer.addresses {
-                    if cluster
-                        .node
-                        .dial(address.parse().map_err(super::err)?)
-                        .await
-                        .is_ok()
-                    {
-                        break;
-                    }
-                }
-                let mut stream = cluster.node.open_protocol(remote, PROTOCOL).await?;
+                let mut stream = open_stream(cluster, &peer).await?;
                 send(
                     &mut stream,
                     &Envelope {

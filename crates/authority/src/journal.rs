@@ -3,8 +3,27 @@ use crate::{Error, Result};
 pub use journal::journal::*;
 use state::Domain;
 const CHUNK_SIZE: usize = crate::protocol::MAX_FRAME - 64;
-fn protocol(error: impl std::fmt::Display) -> Error {
-    Error::Protocol(error.to_string())
+async fn send_chunked(
+    stream: &mut (impl futures::AsyncWrite + Unpin),
+    value: &impl serde::Serialize,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(value).map_err(Error::protocol)?;
+    if bytes.len() > MAX_SNAPSHOT {
+        return Err(Error::Capacity);
+    }
+    let count = bytes.len().div_ceil(CHUNK_SIZE);
+    for (sequence, chunk) in bytes.chunks(CHUNK_SIZE).enumerate() {
+        crate::protocol::write_frame(
+            stream,
+            &JsonFrame {
+                json: chunk.to_vec(),
+                sequence: sequence as u32,
+                last: sequence + 1 == count,
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 /// One bounded exchange; the caller owns the Node and its lifecycle.
 pub async fn request<D: Domain>(
@@ -13,35 +32,15 @@ pub async fn request<D: Domain>(
     genesis_hash: &str,
     request: Request,
 ) -> Result<Response<D>> {
-    if genesis_hash.len() != 64
-        || !genesis_hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(protocol("a pinned lowercase genesis SHA-256 is required"));
-    }
+    wire::protocol::validate_digest(genesis_hash)
+        .map_err(|_| Error::protocol("a pinned lowercase genesis SHA-256 is required"))?;
     let exchange = Exchange {
         genesis_hash: genesis_hash.into(),
         request,
     };
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let mut stream = node.open_protocol(peer, PROTOCOL).await?;
-        let bytes = serde_json::to_vec(&exchange).map_err(protocol)?;
-        if bytes.len() > MAX_SNAPSHOT {
-            return Err(Error::Capacity);
-        }
-        let count = bytes.len().div_ceil(CHUNK_SIZE);
-        for (sequence, chunk) in bytes.chunks(CHUNK_SIZE).enumerate() {
-            crate::protocol::write_frame(
-                &mut stream,
-                &JsonFrame {
-                    json: chunk.to_vec(),
-                    sequence: sequence as u32,
-                    last: sequence + 1 == count,
-                },
-            )
-            .await?;
-        }
+        send_chunked(&mut stream, &exchange).await?;
         let mut json = Vec::new();
         for sequence in 0..=MAX_SNAPSHOT / CHUNK_SIZE {
             let reply: JsonFrame = crate::protocol::read_frame(&mut stream).await?;
@@ -49,11 +48,12 @@ pub async fn request<D: Domain>(
                 || reply.json.is_empty()
                 || json.len().saturating_add(reply.json.len()) > MAX_SNAPSHOT
             {
-                return Err(protocol("invalid snapshot chunks"));
+                return Err(Error::protocol("invalid snapshot chunks"));
             }
             json.extend_from_slice(&reply.json);
             if reply.last {
-                let mut response: Response<D> = serde_json::from_slice(&json).map_err(protocol)?;
+                let mut response: Response<D> =
+                    serde_json::from_slice(&json).map_err(Error::protocol)?;
                 response.verify(genesis_hash)?;
                 // Never accept a server-supplied identity projection as verified facts.
                 response.identity_view = None;
@@ -90,7 +90,7 @@ pub async fn serve<D: Domain>(
                             if frame.sequence as usize != bytes.len().div_ceil(CHUNK_SIZE) || frame.json.is_empty() || bytes.len()+frame.json.len()>MAX_SNAPSHOT || (!frame.last && frame.json.len()!=CHUNK_SIZE) {return Err(Error::Denied);}
                             bytes.extend(frame.json);if frame.last {break;}
                         }
-                        let exchange: Exchange = serde_json::from_slice(&bytes).map_err(protocol)?;
+                        let exchange: Exchange = serde_json::from_slice(&bytes).map_err(Error::protocol)?;
                         let mut journal = journal.lock().await;
                         let actor = peer.to_string();
                         let reply = if exchange.genesis_hash != journal.genesis_hash() { Response::rejected(Error::Protocol("genesis mismatch".into())) } else { match exchange.request {
@@ -107,12 +107,7 @@ pub async fn serve<D: Domain>(
                             }
                         }};
                         drop(journal);
-                        let bytes=serde_json::to_vec(&reply).map_err(protocol)?;
-                        if bytes.len()>MAX_SNAPSHOT { return Err(Error::Capacity); }
-                        let count=bytes.len().div_ceil(CHUNK_SIZE);
-                        for (sequence,chunk) in bytes.chunks(CHUNK_SIZE).enumerate() {
-                            crate::protocol::write_frame(&mut stream,&JsonFrame {json:chunk.to_vec(),sequence:sequence as u32,last:sequence+1==count}).await?;
-                        }
+                        send_chunked(&mut stream, &reply).await?;
                         Ok::<(),Error>(())
                     }).await;
                     if !matches!(result, Ok(Ok(()))) { tracing::debug!(%peer, "governance exchange failed"); }
