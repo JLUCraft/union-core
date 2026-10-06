@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [features]
+documents = ["dep:events", "events/documents"]
 league = ["dep:league"]
 office = ["dep:events", "dep:flows"]
 

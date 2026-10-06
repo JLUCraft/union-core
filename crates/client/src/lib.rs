@@ -19,3 +19,6 @@ pub mod office;
 pub mod trust;
 
 pub mod management;
+
+#[cfg(feature = "documents")]
+pub mod documents;

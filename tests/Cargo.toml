@@ -12,7 +12,7 @@ league = { path = "../crates/league", features = ["runtime"] }
 authority = { path = "../crates/authority" }
 journal = { path = "../crates/journal" }
 node = { path = "../crates/node" }
-client = { path = "../crates/client", features = ["league"] }
+client = { path = "../crates/client", features = ["league", "documents"] }
 identity = { path = "../crates/identity" }
 state = { path = "../crates/state" }
 events = { path = "../crates/events" }
