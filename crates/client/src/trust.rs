@@ -75,6 +75,7 @@ impl Config {
 #[derive(serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    Inspect,
     Sync,
     Draft { action: TrustAction },
     Sign { record: TrustRecord },
@@ -91,12 +92,14 @@ impl<'de> serde::Deserialize<'de> for Input {
         #[derive(serde::Deserialize)]
         #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
         enum Request {
+            Inspect { config: Config },
             Sync { config: Config },
             Draft { config: Config, action: TrustAction },
             Sign { config: Config, record: TrustRecord },
             Submit { config: Config, record: TrustRecord },
         }
         let (config, operation) = match Request::deserialize(deserializer)? {
+            Request::Inspect { config } => (config, Operation::Inspect),
             Request::Sync { config } => (config, Operation::Sync),
             Request::Draft { config, action } => (config, Operation::Draft { action }),
             Request::Sign { config, record } => (config, Operation::Sign { record }),
@@ -107,10 +110,15 @@ impl<'de> serde::Deserialize<'de> for Input {
 }
 pub async fn execute_identity(identity: Identity, input: Input) -> Result<serde_json::Value> {
     let log = tokio::sync::Mutex::new(input.config.open()?);
+    if matches!(input.operation, Operation::Inspect) {
+        return serde_json::to_value(log.lock().await.state())
+            .map_err(|e| crate::Error::Protocol(e.to_string()));
+    }
     let node = Node::start(identity.clone(), crate::NodeConfig::default()).await?;
     let result = async {
         input.config.synchronize(&node, &log).await?;
         match input.operation {
+            Operation::Inspect => Err(crate::Error::Denied),
             Operation::Sync => serde_json::to_value(log.lock().await.state())
                 .map_err(|e| crate::Error::Protocol(e.to_string())),
             Operation::Draft { action } => {
@@ -125,9 +133,11 @@ pub async fn execute_identity(identity: Identity, input: Input) -> Result<serde_
                 {
                     return Err(crate::Error::Denied);
                 }
-                if !record.signatures.is_empty() {
-                    identity::trust::verify_signatures(&record)?;
-                }
+                crate::management::review_record(
+                    &input.config.genesis,
+                    &input.config.genesis_hash,
+                    &record,
+                )?;
                 sign(&mut record, &identity)?;
                 serde_json::to_value(record).map_err(|e| crate::Error::Protocol(e.to_string()))
             }

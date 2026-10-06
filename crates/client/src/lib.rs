@@ -17,3 +17,5 @@ pub mod rooms;
 pub mod office;
 
 pub mod trust;
+
+pub mod management;
