@@ -12,17 +12,7 @@ use wire::{
 pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const CHUNK_BYTES: usize = 32 * 1024;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
-fn valid_hash(hash: &str) -> Result<()> {
-    if hash.len() == 64
-        && hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        Ok(())
-    } else {
-        Err(Error::Denied)
-    }
-}
+use wire::protocol::validate_digest;
 fn bounded_read(path: &Path) -> Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     if !file.metadata()?.is_file() {
@@ -87,7 +77,7 @@ impl Drop for Temporary {
     }
 }
 fn load(directory: &Path, hash: &str) -> Result<Vec<u8>> {
-    valid_hash(hash)?;
+    validate_digest(hash)?;
     let path = directory.join(hash);
     if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
         return Err(Error::Denied);
@@ -131,7 +121,7 @@ pub async fn serve(
     Ok(())
 }
 pub async fn fetch(node: &Node, peer: PeerId, service: ServiceId, hash: &str) -> Result<Vec<u8>> {
-    valid_hash(hash)?;
+    validate_digest(hash)?;
     tokio::time::timeout(EXCHANGE_TIMEOUT, async {
         let mut stream = node.open_service(peer, service).await?;
         write_frame(&mut stream, &DocumentRequest { hash: hash.into() }).await?;

@@ -196,16 +196,6 @@ pub enum FlowAction<D: Domain> {
 fn text(s: &str) -> Result<()> {
     state::governance::identifier(s)
 }
-fn hash(s: &str) -> Result<()> {
-    if s.len() == 64
-        && s.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        Ok(())
-    } else {
-        Err(Error::Denied)
-    }
-}
 fn kind<A: Serialize>(action: &A) -> Result<String> {
     serde_json::to_value(action)
         .map_err(|e| Error::Protocol(e.to_string()))?
@@ -566,7 +556,7 @@ impl<D: Domain> Domain for Flows<D> {
                     FlowAction::Reject { instance, reason } => (instance, reason, true),
                     _ => return Err(Error::Denied),
                 };
-                hash(&comment_hash)?;
+                wire::protocol::validate_digest(&comment_hash)?;
                 let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
                 if flow.status != Status::Active
                     || flow.deadline_ms.is_some_and(|t| ctx.now_ms >= t)

@@ -11,6 +11,25 @@ pub fn validate_identifier(value: &str) -> crate::Result<()> {
     Ok(())
 }
 
+fn validate_lower_hex(value: &str, width: usize) -> crate::Result<()> {
+    if value.len() != width
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    {
+        return Err(crate::Error::Denied);
+    }
+    Ok(())
+}
+/// Canonical SHA-256 text used by genesis, audit and document commitments.
+pub fn validate_digest(value: &str) -> crate::Result<()> {
+    validate_lower_hex(value, 64)
+}
+/// Canonical Minecraft profile UUID, without separators.
+pub fn validate_game_profile(value: &str) -> crate::Result<()> {
+    validate_lower_hex(value, 32)
+}
+
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use prost::Message;
 use sha2::{Digest, Sha256};

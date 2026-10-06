@@ -24,7 +24,8 @@ fn key(bytes: &[u8]) -> Result<PublicKey> {
     }
     Ok(key)
 }
-fn threshold(chairs: &BTreeMap<String, String>, quorum: usize) -> Result<()> {
+/// Validate chair-count and distinct-member majority rules for governance and terminal previews.
+pub fn validate_chairs(chairs: &BTreeMap<String, String>, quorum: usize) -> Result<()> {
     let voters: BTreeSet<_> = chairs.values().collect();
     if chairs.is_empty()
         || chairs.len() > MAX_CHAIRS
@@ -129,7 +130,7 @@ impl TrustState {
                 .memberships
                 .insert((founder.member.clone(), founder.club.clone()));
         }
-        threshold(&state.chairs, state.quorum)?;
+        validate_chairs(&state.chairs, state.quorum)?;
         Ok(state)
     }
     pub fn genesis_digest(genesis: &TrustGenesis) -> Result<String> {
@@ -319,10 +320,7 @@ impl TrustState {
                     }))
                     || !self.signed_member(member, signers)
                     || !self.is_member(member, club)
-                    || profile.len() != 32
-                    || !profile
-                        .bytes()
-                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                    || wire::protocol::validate_game_profile(profile).is_err()
                     || self
                         .profiles
                         .iter()
@@ -356,7 +354,7 @@ impl TrustState {
             }
             TrustAction::ProposeSuccession { id, chairs, quorum } => {
                 identifier(id)?;
-                threshold(chairs, *quorum)?;
+                validate_chairs(chairs, *quorum)?;
                 if !self.chairs.values().any(|m| self.signed_member(m, signers))
                     || self.successions.contains_key(id)
                     || self.successions.len() >= MAX_FACTS
@@ -441,7 +439,7 @@ impl TrustState {
                 if !self.majority(signers) {
                     return Err(Error::Denied);
                 }
-                threshold(chairs, *quorum)?;
+                validate_chairs(chairs, *quorum)?;
                 for (club, member) in chairs {
                     identifier(club)?;
                     if self.members.get(member).is_none_or(BTreeSet::is_empty) {

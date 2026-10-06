@@ -75,6 +75,18 @@ pub enum Action<D: Domain> {
     #[serde(untagged)]
     Domain(D::Action),
 }
+/// Shared structural validation for domain roles; authority checks remain in apply.
+pub fn validate_member_roles(roles: &BTreeSet<String>) -> Result<()> {
+    const MAX_MEMBER_ROLES: usize = 16;
+    if roles.len() > MAX_MEMBER_ROLES {
+        return Err(Error::Capacity);
+    }
+    for role in roles {
+        identifier(role)?;
+    }
+    Ok(())
+}
+
 fn invalid(message: &str) -> Error {
     Error::Protocol(message.into())
 }
@@ -132,15 +144,7 @@ fn validate_binding(binding: &crate::protocol::TrustBusinessBinding) -> Result<(
         .audience
         .parse::<crate::PeerId>()
         .map_err(|_| Error::Denied)?;
-    if binding.genesis.len() != 64
-        || !binding
-            .genesis
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-    {
-        return Err(Error::Denied);
-    }
-    Ok(())
+    crate::protocol::validate_digest(&binding.genesis)
 }
 impl<D: Domain> State<D> {
     pub fn new(binding: crate::protocol::TrustBusinessBinding) -> Result<Self> {
@@ -269,23 +273,15 @@ impl<D: Domain> State<D> {
                 next.core.consensus_members = members;
             }
             Action::SetMemberRoles { member, roles } if admin => {
-                if roles.len() > 16 {
-                    return Err(Error::Capacity);
-                }
-                for role in &roles {
-                    identifier(role)?;
-                }
+                validate_member_roles(&roles)?;
                 let mut m = core.members.get(&member).ok_or(Error::NotFound)?.clone();
                 m.roles = roles;
                 next.core.members.insert(member, m);
             }
             Action::AnchorDigest { id, digest } if admin => {
                 identifier(&id)?;
-                if digest.len() != 64
-                    || !digest
-                        .bytes()
-                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-                    || next.core.digest_anchors.contains_key(&id)
+                crate::protocol::validate_digest(&digest)?;
+                if next.core.digest_anchors.contains_key(&id)
                     || next.core.digest_anchors.len() >= MAX_DIGEST_ANCHORS
                 {
                     return Err(Error::Denied);

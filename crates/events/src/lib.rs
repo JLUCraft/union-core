@@ -116,16 +116,6 @@ fn text(s: &str, max: usize) -> Result<()> {
         Ok(())
     }
 }
-fn hash(s: &str) -> Result<()> {
-    if s.len() == 64
-        && s.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        Ok(())
-    } else {
-        Err(Error::Denied)
-    }
-}
 fn manage(event: &Event, ctx: &Context<'_>) -> bool {
     ctx.core.admins.contains(ctx.actor)
         || ctx.member().is_ok_and(|(id, m)| {
@@ -178,7 +168,7 @@ impl Domain for EventsDomain {
                 if let Ok(cid) = brief_hash.parse::<wire::protocol::Cid>() {
                     state.files.read(&cid)?;
                 } else {
-                    hash(&brief_hash)?;
+                    wire::protocol::validate_digest(&brief_hash)?;
                 }
                 if state.events.len() >= MAX_RECORDS
                     || state.events.contains_key(&id)
@@ -258,7 +248,7 @@ impl Domain for EventsDomain {
                 if let Ok(cid) = brief_hash.parse::<wire::protocol::Cid>() {
                     state.files.read(&cid)?;
                 } else {
-                    hash(&brief_hash)?;
+                    wire::protocol::validate_digest(&brief_hash)?;
                 }
                 let event = state.events.get_mut(&id).ok_or(Error::NotFound)?;
                 active(event)?;
