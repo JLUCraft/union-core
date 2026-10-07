@@ -110,6 +110,63 @@ fn founder_exports_require_matching_public_identities_and_real_majority() {
     assert!(value.get("genesis_hash").and_then(Value::as_str).is_some());
 }
 #[test]
+fn public_identity_keys_round_trip_as_hex_and_still_accept_legacy_arrays() {
+    let key = Identity::generate();
+    let public = PublicIdentity::from_identity(&key);
+    let value = serde_json::to_value(&public).unwrap();
+    let hex = value["public_key"].as_str().unwrap();
+    let expected: String = public
+        .public_key
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(hex, expected);
+    assert!(
+        hex.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    );
+    let decoded: PublicIdentity = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.peer, public.peer);
+    assert_eq!(decoded.public_key, public.public_key);
+    decoded.validate().unwrap();
+}
+#[test]
+fn public_identity_keys_reject_malformed_hex() {
+    let key = Identity::generate();
+    let public = PublicIdentity::from_identity(&key);
+    for hex in ["zz", "abc", "0g"] {
+        let value = json!({"peer": public.peer, "public_key": hex});
+        assert!(
+            serde_json::from_value::<PublicIdentity>(value).is_err(),
+            "{hex}"
+        );
+    }
+}
+#[test]
+fn build_genesis_accepts_hex_encoded_founder_identities() {
+    let key = Identity::generate();
+    let public = PublicIdentity::from_identity(&key);
+    let exported = serde_json::to_value(&public).unwrap();
+    let imported: PublicIdentity = serde_json::from_value(exported).unwrap();
+    let legacy = json!({
+        "peer": public.peer,
+        "public_key": public.public_key,
+    });
+    for identity in [imported, serde_json::from_value(legacy).unwrap()] {
+        let value = management::build_genesis(
+            "test".into(),
+            vec![FounderInput {
+                member: "chair".into(),
+                club: "school".into(),
+                identity,
+            }],
+            1,
+        )
+        .unwrap();
+        assert!(value.get("genesis_hash").and_then(Value::as_str).is_some());
+    }
+}
+#[test]
 fn offline_co_signing_requires_the_pinned_genesis_and_valid_prior_signatures() {
     let key = Identity::generate();
     let other = Identity::generate();

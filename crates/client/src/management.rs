@@ -235,7 +235,62 @@ pub fn build_action(action: &str, fields: Map<String, Value>) -> Result<TrustAct
 #[serde(deny_unknown_fields)]
 pub struct PublicIdentity {
     pub peer: String,
+    #[serde(
+        serialize_with = "serialize_public_key",
+        deserialize_with = "deserialize_public_key"
+    )]
     pub public_key: Vec<u8>,
+}
+fn serialize_public_key<S: serde::Serializer>(
+    key: &[u8],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.serialize_str(&hex_encode(key))
+}
+fn deserialize_public_key<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<u8>, D::Error> {
+    struct PublicKeyVisitor;
+    impl<'de> serde::de::Visitor<'de> for PublicKeyVisitor {
+        type Value = Vec<u8>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a lowercase hex string or an array of byte values")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Vec<u8>, E> {
+            decode_hex(value).map_err(serde::de::Error::custom)
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Vec<u8>, A::Error> {
+            let mut bytes = Vec::new();
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
+    deserializer.deserialize_any(PublicKeyVisitor)
+}
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn decode_hex(text: &str) -> std::result::Result<Vec<u8>, String> {
+    if !text.len().is_multiple_of(2) {
+        return Err("odd-length hex string".into());
+    }
+    let mut bytes = Vec::with_capacity(text.len() / 2);
+    let mut chars = text.chars();
+    while let (Some(high), Some(low)) = (chars.next(), chars.next()) {
+        let high = high
+            .to_digit(16)
+            .ok_or_else(|| format!("invalid hex character: {high}"))?;
+        let low = low
+            .to_digit(16)
+            .ok_or_else(|| format!("invalid hex character: {low}"))?;
+        bytes.push((high * 16 + low) as u8);
+    }
+    Ok(bytes)
 }
 impl PublicIdentity {
     pub fn from_identity(identity: &Identity) -> Self {
