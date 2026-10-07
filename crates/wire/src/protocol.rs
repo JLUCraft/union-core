@@ -710,6 +710,7 @@ pub struct TrustCheckpoint {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(clippy::large_enum_variant)] // Keep the signed wire record directly available to callers.
 pub enum TrustRequest {
+    Genesis,
     Read { checkpoint: TrustCheckpoint },
     Append { record: TrustRecord },
 }
@@ -719,6 +720,8 @@ pub struct TrustResponse {
     pub checkpoint: TrustCheckpoint,
     pub records: Vec<TrustRecord>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis: Option<TrustGenesis>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

@@ -254,6 +254,9 @@ impl<D: Domain> Store<D> {
     pub async fn state(&self) -> State<D> {
         self.inner.lock().await.machine.state.clone()
     }
+    pub async fn genesis(&self) -> State<D> {
+        self.inner.lock().await.machine.audit.baseline.clone()
+    }
     pub async fn preflight(&self, request: &super::Replicated) -> crate::Result<()> {
         let disk = self.inner.lock().await;
         disk.machine.clone().apply_request(request, &disk.genesis)

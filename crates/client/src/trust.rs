@@ -1,5 +1,5 @@
 //! Shared CLI/JNI/Tauri identity client. The caller owns the Node and durable cache.
-use crate::{Identity, Node, PeerId, Result};
+use crate::{AddressProtocol, Identity, Multiaddr, Node, PeerId, Result};
 use authority::journal::{self, Command, Request, SignedCommand, TrustedCommand};
 pub use authority::trust::{TrustLog, TrustView, request, synchronize};
 pub use identity::trust::{TrustState, sign};
@@ -178,4 +178,66 @@ pub fn review(genesis: TrustGenesis, pinned: &str, records: &[TrustRecord]) -> R
         state.apply(record)?;
     }
     Ok(state)
+}
+
+fn parse_authority(address: &str, peer: &str) -> Result<(Multiaddr, PeerId)> {
+    let peer: PeerId = peer
+        .parse()
+        .map_err(|_| crate::Error::Protocol("invalid peer".into()))?;
+    let address: Multiaddr = address
+        .parse()
+        .map_err(|_| crate::Error::Protocol("invalid address".into()))?;
+    if !matches!(address.iter().last(),Some(AddressProtocol::P2p(id)) if id==peer) {
+        return Err(crate::Error::Denied);
+    }
+    Ok((address, peer))
+}
+
+fn unwrap_genesis<T>(error: Option<String>, genesis: Option<T>) -> Result<T> {
+    match (error, genesis) {
+        (Some(error), _) => Err(crate::Error::Protocol(error)),
+        (None, Some(genesis)) => Ok(genesis),
+        (None, None) => Err(crate::Error::Denied),
+    }
+}
+
+/// TOFU bootstrap: fetch the identity genesis over an authenticated connection,
+/// then pin it to the digest recomputed locally from the returned content.
+pub async fn fetch_identity_genesis(
+    node: &Node,
+    address: &str,
+    peer: &str,
+) -> Result<(TrustGenesis, String)> {
+    let (address, peer) = parse_authority(address, peer)?;
+    node.dial(address).await?;
+    let response = request(node, peer, TrustRequest::Genesis).await?;
+    let genesis = unwrap_genesis(response.error, response.genesis)?;
+    let pin = TrustState::genesis_digest(&genesis)?;
+    TrustState::new(&genesis, &pin)?;
+    Ok((genesis, pin))
+}
+
+/// TOFU bootstrap for a business chain: fetch the pinned genesis state, verify its
+/// binding against the already-confirmed identity pin and this server's peer, then
+/// pin the digest recomputed locally from the returned content.
+pub async fn fetch_business_genesis<D: Domain>(
+    node: &Node,
+    address: &str,
+    peer: &str,
+    identity_pin: &str,
+) -> Result<(state::State<D>, String)> {
+    let (address, peer) = parse_authority(address, peer)?;
+    node.dial(address).await?;
+    let response = journal::discover::<D>(node, peer).await?;
+    let genesis = unwrap_genesis(response.error, response.genesis)?;
+    let binding = &genesis.core.identity;
+    if binding.genesis != identity_pin {
+        return Err(crate::Error::Denied);
+    }
+    if binding.audience != peer.to_string() {
+        return Err(crate::Error::Denied);
+    }
+    let pin =
+        crate::protocol::digest(&serde_json::to_vec(&genesis).map_err(crate::Error::protocol)?);
+    Ok((genesis, pin))
 }

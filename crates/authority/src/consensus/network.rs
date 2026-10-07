@@ -200,10 +200,16 @@ pub async fn serve<D: Domain>(cluster: Arc<Cluster<D>>) -> Result<()> {
           tasks.spawn(async move{let _permit=permit;let result=timeout(Duration::from_secs(30),async{
            let exchange:Exchange=receive(&mut stream,crate::journal::MAX_SNAPSHOT).await?;
            let result=async {
-            if exchange.genesis_hash!=cluster.cluster {return Err(Error::Denied);}
             let applied=match exchange.request {
-                Request::Snapshot=>return cluster.response(peer).await,
-                Request::Execute{command,history}=>cluster.execute(peer,command,history).await?,
+                Request::Genesis=>return Ok(Response::<D>::genesis(cluster.store.genesis().await)),
+                Request::Snapshot=>{
+                    if exchange.genesis_hash!=cluster.cluster {return Err(Error::Denied);}
+                    return cluster.response(peer).await;
+                },
+                Request::Execute{command,history}=>{
+                    if exchange.genesis_hash!=cluster.cluster {return Err(Error::Denied);}
+                    cluster.execute(peer,command,history).await?
+                },
             };
             if let Some(error)=applied.error {return Err(Error::Protocol(error));}
             cluster.response(peer).await

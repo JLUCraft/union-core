@@ -57,6 +57,7 @@ pub struct Journal<D: Domain> {
     path: PathBuf,
     _lock: File,
     entries: Vec<Entry>,
+    genesis: State<D>,
     state: State<D>,
     genesis_hash: String,
     trust: Option<identity::trust::TrustState>,
@@ -82,7 +83,7 @@ impl<D: Domain> Journal<D> {
         } else {
             Vec::new()
         };
-        let mut state = genesis;
+        let mut state = genesis.clone();
         let mut trust = None;
         let mut previous = genesis_hash.clone();
         for entry in &entries {
@@ -128,6 +129,7 @@ impl<D: Domain> Journal<D> {
             path,
             _lock: lock,
             entries,
+            genesis,
             state,
             genesis_hash,
         })
@@ -137,6 +139,9 @@ impl<D: Domain> Journal<D> {
     }
     pub fn genesis_hash(&self) -> &str {
         &self.genesis_hash
+    }
+    pub fn genesis(&self) -> &State<D> {
+        &self.genesis
     }
     pub fn state(&self) -> &State<D> {
         &self.state
@@ -175,6 +180,7 @@ impl<D: Domain> Journal<D> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum Request {
+    Genesis,
     Snapshot,
     Execute {
         command: SignedCommand,
@@ -205,6 +211,8 @@ pub struct SnapshotProof {
 pub struct Response<D: Domain> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_view: Option<state::governance::IdentityPresentation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis: Option<State<D>>,
     pub state: Option<State<D>>,
     pub error: Option<String>,
     pub error_code: Option<wire::protocol::ClientErrorCode>,
@@ -217,6 +225,7 @@ impl<D: Domain> Response<D> {
         let state_hash = digest(&serde_json::to_vec(&state).map_err(Error::protocol)?);
         Ok(Self {
             identity_view: None,
+            genesis: None,
             state: Some(state),
             error: None,
             error_code: None,
@@ -229,9 +238,22 @@ impl<D: Domain> Response<D> {
         })
     }
     #[doc(hidden)]
+    pub fn genesis(genesis: State<D>) -> Self {
+        // The caller has no pinned hash yet; local digest recomputation is the pin.
+        Self {
+            identity_view: None,
+            genesis: Some(genesis),
+            state: None,
+            error: None,
+            error_code: None,
+            proof: None,
+        }
+    }
+    #[doc(hidden)]
     pub fn rejected(error: Error) -> Self {
         Self {
             identity_view: None,
+            genesis: None,
             state: None,
             error_code: Some(error.failure().code),
             error: Some(error.to_string()),
@@ -241,15 +263,15 @@ impl<D: Domain> Response<D> {
     /// Integrity and deployment binding over an authenticated authority connection.
     /// This is not a Byzantine validity proof or a substitute for journal replay.
     pub fn verify(&self, genesis_hash: &str) -> Result<()> {
-        match (&self.state, &self.error, &self.proof) {
-            (Some(state), None, Some(proof))
+        match (&self.genesis, &self.state, &self.error, &self.proof) {
+            (None, Some(state), None, Some(proof))
                 if proof.genesis_hash == genesis_hash
                     && proof.state_hash
                         == digest(&serde_json::to_vec(state).map_err(Error::protocol)?) =>
             {
                 Ok(())
             }
-            (None, Some(_), None) => Ok(()),
+            (None, None, Some(_), None) => Ok(()),
             _ => Err(Error::Denied),
         }
     }

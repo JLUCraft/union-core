@@ -34,13 +34,43 @@ pub async fn request<D: Domain>(
 ) -> Result<Response<D>> {
     wire::protocol::validate_digest(genesis_hash)
         .map_err(|_| Error::protocol("a pinned lowercase genesis SHA-256 is required"))?;
-    let exchange = Exchange {
-        genesis_hash: genesis_hash.into(),
-        request,
-    };
+    let mut response = exchange(
+        node,
+        peer,
+        &Exchange {
+            genesis_hash: genesis_hash.into(),
+            request,
+        },
+    )
+    .await?;
+    response.verify(genesis_hash)?;
+    // Never accept a server-supplied identity projection as verified facts.
+    response.identity_view = None;
+    Ok(response)
+}
+
+/// TOFU discovery: the caller has no pinned hash yet, so the serve side skips the
+/// pin comparison and the caller must verify the returned genesis locally.
+pub async fn discover<D: Domain>(node: &crate::Node, peer: crate::PeerId) -> Result<Response<D>> {
+    exchange(
+        node,
+        peer,
+        &Exchange {
+            genesis_hash: String::new(),
+            request: Request::Genesis,
+        },
+    )
+    .await
+}
+
+async fn exchange<D: Domain>(
+    node: &crate::Node,
+    peer: crate::PeerId,
+    exchange: &Exchange,
+) -> Result<Response<D>> {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let mut stream = node.open_protocol(peer, PROTOCOL).await?;
-        send_chunked(&mut stream, &exchange).await?;
+        send_chunked(&mut stream, exchange).await?;
         let mut json = Vec::new();
         for sequence in 0..=MAX_SNAPSHOT / CHUNK_SIZE {
             let reply: JsonFrame = crate::protocol::read_frame(&mut stream).await?;
@@ -52,12 +82,7 @@ pub async fn request<D: Domain>(
             }
             json.extend_from_slice(&reply.json);
             if reply.last {
-                let mut response: Response<D> =
-                    serde_json::from_slice(&json).map_err(Error::protocol)?;
-                response.verify(genesis_hash)?;
-                // Never accept a server-supplied identity projection as verified facts.
-                response.identity_view = None;
-                return Ok(response);
+                return serde_json::from_slice(&json).map_err(Error::protocol);
             }
         }
         Err(Error::Capacity)
@@ -93,7 +118,10 @@ pub async fn serve<D: Domain>(
                         let exchange: Exchange = serde_json::from_slice(&bytes).map_err(Error::protocol)?;
                         let mut journal = journal.lock().await;
                         let actor = peer.to_string();
-                        let reply = if exchange.genesis_hash != journal.genesis_hash() { Response::rejected(Error::Protocol("genesis mismatch".into())) } else { match exchange.request {
+                        let reply = match exchange.request {
+                            // Discovery has no pin yet; binding checks happen on the client.
+                            Request::Genesis => Response::genesis(journal.genesis().clone()),
+                            request => if exchange.genesis_hash != journal.genesis_hash() { Response::rejected(Error::Protocol("genesis mismatch".into())) } else { match request {
                             Request::Snapshot => {
                                 let allowed=identity.state().map(|state|journal.state().can_read(&actor,&state));
                                 match allowed {Ok(true)=>journal.snapshot()?,Ok(false)=>Response::rejected(Error::Denied),Err(error)=>Response::rejected(error)}
@@ -104,8 +132,9 @@ pub async fn serve<D: Domain>(
                                     _=>Err(Error::Denied),
                                 };
                                 match result {Ok(())=>journal.snapshot()?,Err(error)=>Response::rejected(error)}
-                            }
-                        }};
+                            },
+                            Request::Genesis => Response::rejected(Error::Denied),
+                            }}};
                         drop(journal);
                         send_chunked(&mut stream, &reply).await?;
                         Ok::<(),Error>(())

@@ -122,14 +122,20 @@ pub async fn serve_with_view(
                         if frame.sequence != 0 || !frame.last { return Err(Error::Denied); }
                         let request:TrustRequest=serde_json::from_slice(&frame.json).map_err(protocol_error)?;
                         let mut log=log.lock().await;
-                        let result=match request {
+                        let response=match request {
+                            // TOFU discovery must work even on a stale replica view.
+                            TrustRequest::Genesis => TrustResponse {checkpoint:log.state().checkpoint().clone(), records:Vec::new(), error:None, genesis:Some(log.genesis().clone())},
+                            request => {
+                            let result=match request {
                             TrustRequest::Read {checkpoint} => {if writable {log.mark_current()?;} view.state().and_then(|_|log.page(&checkpoint))},
                             TrustRequest::Append {record} if writable => log.append(record).and_then(|()| {log.mark_current()?; Ok(Vec::new())}),
                             _ => Err(Error::Denied),
                         };
-                        let response=match result {
-                            Ok(records)=>TrustResponse {checkpoint:log.state().checkpoint().clone(), records,error:None},
-                            Err(error)=>TrustResponse {checkpoint:log.state().checkpoint().clone(),records:Vec::new(),error:Some(error.to_string())},
+                        match result {
+                            Ok(records)=>TrustResponse {checkpoint:log.state().checkpoint().clone(), records,error:None, genesis:None},
+                            Err(error)=>TrustResponse {checkpoint:log.state().checkpoint().clone(),records:Vec::new(),error:Some(error.to_string()), genesis:None},
+                        }
+                            }
                         };
                         drop(log);
                         let bytes=serde_json::to_vec(&response).map_err(protocol_error)?;

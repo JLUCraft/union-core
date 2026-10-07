@@ -185,6 +185,9 @@ impl TrustLog {
     pub fn state(&self) -> &TrustState {
         &self.state
     }
+    pub fn genesis(&self) -> &TrustGenesis {
+        &self.genesis
+    }
     pub fn history_since(
         &self,
         checkpoint: Option<&TrustCheckpoint>,
