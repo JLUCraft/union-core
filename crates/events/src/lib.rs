@@ -2,10 +2,10 @@
 //! Deterministic event planning and replicated IPLD file history.
 pub mod files;
 pub mod workflows;
+use protocol::{Error, Result};
 use serde::{Deserialize, Serialize};
 use state::{Context, Domain};
 use std::collections::{BTreeMap, BTreeSet};
-use wire::{Error, Result};
 
 const MAX_RECORDS: usize = 10_000;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -64,12 +64,12 @@ pub struct Task {
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum EventAction {
     #[serde(rename = "files.put")]
-    PutBlock { block: wire::protocol::IpldBlock },
+    PutBlock { block: protocol::IpldBlock },
     #[serde(rename = "files.commit")]
     CommitFiles {
         branch: String,
-        expected: Option<wire::protocol::Cid>,
-        commit: wire::protocol::Cid,
+        expected: Option<protocol::Cid>,
+        commit: protocol::Cid,
     },
     #[serde(rename = "events.create")]
     Create {
@@ -146,7 +146,7 @@ impl Domain for EventsDomain {
         if event.epoch != *epoch || event.phase != Phase::Review {
             return Err(Error::Denied);
         }
-        let cid: wire::protocol::Cid = if let Some(plan) = state.office.plans.get(id) {
+        let cid: protocol::Cid = if let Some(plan) = state.office.plans.get(id) {
             plan.review_input.clone().ok_or(Error::Denied)?
         } else {
             event.brief_hash.parse()?
@@ -217,10 +217,10 @@ impl Domain for EventsDomain {
                 let (creator, member) = ctx.member()?;
                 text(&id, 128)?;
                 text(&title, 256)?;
-                if let Ok(cid) = brief_hash.parse::<wire::protocol::Cid>() {
+                if let Ok(cid) = brief_hash.parse::<protocol::Cid>() {
                     state.files.read(&cid)?;
                 } else {
-                    wire::protocol::validate_digest(&brief_hash)?;
+                    protocol::validate_digest(&brief_hash)?;
                 }
                 if state.events.len() >= MAX_RECORDS
                     || state.events.contains_key(&id)
@@ -328,10 +328,10 @@ impl Domain for EventsDomain {
                 event.phase = target;
             }
             EventAction::Amend { id, brief_hash } => {
-                if let Ok(cid) = brief_hash.parse::<wire::protocol::Cid>() {
+                if let Ok(cid) = brief_hash.parse::<protocol::Cid>() {
                     state.files.read(&cid)?;
                 } else {
-                    wire::protocol::validate_digest(&brief_hash)?;
+                    protocol::validate_digest(&brief_hash)?;
                 }
                 let event = state.events.get_mut(&id).ok_or(Error::NotFound)?;
                 active(event)?;

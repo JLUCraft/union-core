@@ -1,12 +1,12 @@
 use crate::{Error, Provider, Result, send};
 use client::llm::MAX_OUTPUT_BYTES;
 use futures::AsyncWrite;
+use protocol::{LlmFrame, LlmRequest, LlmUsage, MAX_FRAME};
 use reqwest::{
     Client, Url,
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::{Value, json};
-use wire::protocol::{LlmFrame, LlmRequest, LlmUsage, MAX_FRAME};
 
 pub struct Backend {
     client: Client,

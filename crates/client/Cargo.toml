@@ -13,7 +13,7 @@ office = ["dep:events", "dep:flows"]
 events = { path = "../events", optional = true }
 flows = { path = "../flows", optional = true }
 league = { path = "../league", optional = true }
-wire = { path = "../wire" }
+protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 node = { path = "../node" }
 state = { path = "../state" }

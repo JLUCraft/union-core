@@ -5,6 +5,7 @@ use identity::Identity;
 use league::journal::Journal;
 use llm_gateway::{Config, Gateway, Ledger, MemberPolicy, Provider};
 use node::{AccessPolicy, Node, NodeConfig, Service, ServiceId};
+use protocol::{LLM_PROTOCOL, LlmMessage, LlmRequest, Privacy};
 use std::{
     collections::BTreeSet,
     sync::{
@@ -17,7 +18,6 @@ use tokio::{
     net::TcpListener,
     sync::Mutex,
 };
-use wire::protocol::{LLM_PROTOCOL, LlmMessage, LlmRequest, Privacy};
 
 fn request() -> LlmRequest {
     LlmRequest {
@@ -191,7 +191,7 @@ async fn smoke(body: &'static str) {
             protocol: LLM_PROTOCOL.into(),
             access: AccessPolicy::Trust {
                 view: view.clone(),
-                requirement: wire::protocol::TrustRequirement {
+                requirement: protocol::TrustRequirement {
                     clubs: Default::default(),
                     permission: Some("use".into()),
                 },
@@ -223,11 +223,9 @@ async fn smoke(body: &'static str) {
                 tokio::task::yield_now().await;
             }
             let mut log = log.lock().await;
-            let mut record = log
-                .state()
-                .draft(wire::protocol::TrustAction::RevokePermission {
-                    id: format!("{service}-alice"),
-                });
+            let mut record = log.state().draft(protocol::TrustAction::RevokePermission {
+                id: format!("{service}-alice"),
+            });
             identity::trust::sign(&mut record, &root).unwrap();
             log.append(record).unwrap();
             log.mark_current().unwrap();
@@ -555,7 +553,7 @@ async fn workflow_purpose_composes_context_and_rejects_smuggled_input() {
                 protocol: LLM_PROTOCOL.into(),
                 access: AccessPolicy::Trust {
                     view: view.clone(),
-                    requirement: wire::protocol::TrustRequirement {
+                    requirement: protocol::TrustRequirement {
                         clubs: Default::default(),
                         permission: Some("use".into()),
                     },

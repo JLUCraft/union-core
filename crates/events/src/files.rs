@@ -1,11 +1,9 @@
 //! Replicated immutable blocks and compare-and-swap directory heads.
+use protocol::{
+    Cid, Error, FileLayout, FileNode, IpldBlock, IpldLink, Result, digest, ipld::BLOCK_BYTES,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use wire::{
-    Error, Result,
-    ipld::BLOCK_BYTES,
-    protocol::{Cid, FileLayout, FileNode, IpldBlock, IpldLink, digest},
-};
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_STORE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_COMMIT_PATHS: usize = 24;

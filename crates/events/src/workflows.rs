@@ -1,9 +1,9 @@
 //! Office business workflows. All decisions are derived from signed state and server time.
 use crate::{EventsState, Phase, active, manage, text};
+use protocol::{Cid, Error, Result};
 use serde::{Deserialize, Serialize};
 use state::Context;
 use std::collections::{BTreeMap, BTreeSet};
-use wire::{Error, Result, protocol::Cid};
 
 pub const MAX_ITEMS: usize = 128;
 const MAX_TEXT: usize = 4096;
@@ -1069,13 +1069,13 @@ fn report_evidence(
 pub fn league_id(event: &str, game: &str) -> String {
     format!(
         "office-{}",
-        wire::protocol::digest(format!("{}:{event}{game}", event.len()).as_bytes())
+        protocol::digest(format!("{}:{event}{game}", event.len()).as_bytes())
     )
 }
 
 fn document_evidence(state: &EventsState, cid: &Cid) -> Result<serde_json::Value> {
     let bytes = state.files.read(cid)?;
-    if let Some(mime) = wire::protocol::llm_document_mime(&bytes) {
+    if let Some(mime) = protocol::llm_document_mime(&bytes) {
         return Ok(serde_json::json!({"cid":cid,"mime":mime,"requires_document_review":true}));
     }
     Ok(match String::from_utf8(bytes) {

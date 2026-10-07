@@ -90,7 +90,7 @@ pub fn validate_member_roles(roles: &BTreeSet<String>) -> Result<()> {
 fn invalid(message: &str) -> Error {
     Error::Protocol(message.into())
 }
-pub use wire::protocol::validate_identifier as identifier;
+pub use protocol::validate_identifier as identifier;
 
 /// Node IDs and authenticated transport identities are explicit, never inferred from addresses.
 pub fn validate_consensus_members(peers: &BTreeMap<u64, ConsensusPeer>) -> Result<()> {

@@ -3,10 +3,10 @@ use crate::{AddressProtocol, Identity, Multiaddr, Node, PeerId, Result};
 use authority::journal::{self, Command, Request, SignedCommand, TrustedCommand};
 pub use authority::trust::{TrustLog, TrustView, request, synchronize};
 pub use identity::trust::{TrustState, sign};
-use state::{Domain, governance::Action};
-pub use wire::protocol::{
+pub use protocol::{
     TrustAction, TrustCheckpoint, TrustGenesis, TrustRecord, TrustRequest, TrustResponse,
 };
+use state::{Domain, governance::Action};
 /// Use the business response's anchored identity position to send only missing identity history.
 pub async fn execute<D: Domain>(
     node: &Node,

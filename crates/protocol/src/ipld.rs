@@ -1,8 +1,5 @@
 //! A bounded CIDv1/raw/DAG-JSON profile, using standard multibase and SHA2-256.
-use crate::{
-    Error, Result,
-    protocol::{Cid, FileNode, IpldBlock, IpldLink},
-};
+use crate::{Cid, Error, FileNode, IpldBlock, IpldLink, Result};
 use sha2::{Digest, Sha256};
 pub const BLOCK_BYTES: usize = 4096;
 const RAW: &[u8] = &[1, 0x55, 0x12, 32];

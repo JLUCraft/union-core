@@ -3,8 +3,8 @@
 pub use authority::journal;
 pub use identity::{Identity, PeerId};
 pub use node::{AddressProtocol, Multiaddr, Node, NodeConfig, ServiceId};
+pub use protocol::{self, Error, Result};
 pub use state::governance;
-pub use wire::{Error, Result, protocol};
 #[cfg(feature = "league")]
 pub mod client;
 pub mod llm;

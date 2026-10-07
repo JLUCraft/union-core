@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-wire = { path = "../wire" }
+protocol = { path = "../protocol" }
 libp2p-identity = { version = "0.3", features = ["ed25519", "rand", "peerid"] }
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }

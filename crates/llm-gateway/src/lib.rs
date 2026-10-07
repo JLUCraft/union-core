@@ -6,6 +6,7 @@ use authority::journal::now_ms;
 use futures::{AsyncReadExt, AsyncWrite};
 pub use ledger::{Ledger, Quotas, Reservation, UsageSummary, UsageTotals};
 use node::IncomingSession;
+use protocol::*;
 use serde::Deserialize;
 use state::Domain;
 use std::{
@@ -13,7 +14,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Mutex, Semaphore};
-use wire::protocol::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -24,7 +24,7 @@ pub enum Error {
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("union: {0}")]
-    Union(#[from] wire::Error),
+    Union(#[from] protocol::Error),
     // Never expose reqwest errors, URLs, provider bodies or API keys to clients/logs.
     #[error("provider request failed")]
     Provider,
@@ -84,7 +84,7 @@ impl<D: Domain> Gateway<D> {
             || config.max_messages > 128
             || config.max_tokens == 0
             || config.max_input_bytes == 0
-            || config.max_input_bytes > wire::protocol::MAX_LLM_REQUEST_BYTES / 2
+            || config.max_input_bytes > protocol::MAX_LLM_REQUEST_BYTES / 2
             || config.purposes.is_empty()
         {
             return Err(Error::Invalid("invalid gateway limits"));
@@ -192,7 +192,7 @@ impl<D: Domain> Gateway<D> {
         };
         let request = match tokio::time::timeout(
             Duration::from_secs(30),
-            wire::protocol::read_llm_request(&mut stream),
+            protocol::read_llm_request(&mut stream),
         )
         .await
         {

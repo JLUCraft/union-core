@@ -1,7 +1,7 @@
 use client::management::{self, FieldKind, FounderInput, PublicIdentity};
 use identity::Identity;
+use protocol::{TrustAction, TrustGenesis};
 use serde_json::{Value, json};
-use wire::protocol::{TrustAction, TrustGenesis};
 
 fn genesis(key: &Identity) -> TrustGenesis {
     serde_json::from_value(
@@ -20,7 +20,7 @@ fn genesis(key: &Identity) -> TrustGenesis {
     .unwrap()
 }
 #[test]
-fn every_administrative_wire_action_has_a_native_form_and_builds_without_json_authoring() {
+fn every_administrative_protocol_action_has_a_native_form_and_builds_without_json_authoring() {
     let peer = Identity::generate().peer_id().to_string();
     let forms = management::forms().unwrap();
     assert_eq!(forms.len(), 15);
@@ -40,9 +40,9 @@ fn every_administrative_wire_action_has_a_native_form_and_builds_without_json_au
             );
         }
         let action = management::build_action(&form.action, fields).unwrap();
-        let wire = serde_json::to_value(action).unwrap();
-        assert_eq!(wire["type"], form.action);
-        assert!(serde_json::from_value::<TrustAction>(wire).is_ok());
+        let value = serde_json::to_value(action).unwrap();
+        assert_eq!(value["type"], form.action);
+        assert!(serde_json::from_value::<TrustAction>(value).is_ok());
     }
     let exact = management::build_action(
         "revoke_membership",

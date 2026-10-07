@@ -4,8 +4,8 @@ mod support;
 use events::{EventAction as E, EventsDomain, Phase, Window};
 use flows::{Approver, FlowAction, Flows, Stage, Status, Template, TimeoutPolicy};
 use identity::Identity;
+use protocol::Result;
 use state::{State, governance::Action};
-use wire::Result;
 
 type Office = Flows<EventsDomain>;
 type A = Action<Office>;
@@ -35,7 +35,7 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
                 worker: "bob".into(),
                 model: "local".into(),
                 purpose: "events.summary".into(),
-                privacy: wire::protocol::Privacy::Sensitive,
+                privacy: protocol::Privacy::Sensitive,
                 max_tokens: 128,
             },
             timeout_ms: None,
@@ -625,14 +625,14 @@ fn payload_failure_is_atomic_and_revoked_approvals_cannot_execute() {
     h.vote(2, "flow").unwrap();
     let phone = Identity::generate();
     h.identities.append(
-        wire::protocol::TrustAction::BindDevice {
+        protocol::TrustAction::BindDevice {
             member: "bob".into(),
             device: phone.peer_id().to_string(),
         },
         &[&h.keys[2], &phone],
     );
     h.identities.append(
-        wire::protocol::TrustAction::RevokeDevice {
+        protocol::TrustAction::RevokeDevice {
             member: "bob".into(),
             device: h.keys[2].peer_id().to_string(),
         },
@@ -683,7 +683,7 @@ fn review_stage(mode: flows::AiMode) -> Stage {
             worker: "bob".into(),
             model: "local".into(),
             purpose: "events.review".into(),
-            privacy: wire::protocol::Privacy::Sensitive,
+            privacy: protocol::Privacy::Sensitive,
             max_tokens: 512,
         },
         timeout_ms: Some(1000),
@@ -691,7 +691,7 @@ fn review_stage(mode: flows::AiMode) -> Stage {
     }
 }
 impl Harness {
-    fn file(&mut self, content: &[u8]) -> wire::protocol::Cid {
+    fn file(&mut self, content: &[u8]) -> protocol::Cid {
         let (cid, blocks) = self
             .journal
             .state()
@@ -706,7 +706,7 @@ impl Harness {
         }
         cid
     }
-    fn review_flow(&mut self) -> wire::protocol::Cid {
+    fn review_flow(&mut self) -> protocol::Cid {
         let input = self.file(b"Actual event plan");
         self.run(
             1,
@@ -722,7 +722,7 @@ impl Harness {
         self.start_review("review", input.clone());
         input
     }
-    fn start_review(&mut self, id: &str, input: wire::protocol::Cid) {
+    fn start_review(&mut self, id: &str, input: protocol::Cid) {
         let epoch = self.journal.state().domain.inner.events["event"].epoch;
         self.run(
             1,
@@ -754,7 +754,7 @@ impl Harness {
         .unwrap();
         job
     }
-    fn finish(&mut self, job: &flows::AiJob, output: wire::protocol::Cid) -> Result<()> {
+    fn finish(&mut self, job: &flows::AiJob, output: protocol::Cid) -> Result<()> {
         self.run(
             2,
             A::Domain(F::FinishAi {

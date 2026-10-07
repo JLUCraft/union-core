@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-wire = { path = "../wire" }
+protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 multiaddr = "0.19"
 serde = { version = "1", features = ["derive"] }

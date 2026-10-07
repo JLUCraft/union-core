@@ -8,7 +8,7 @@ use league::{
 };
 use std::collections::BTreeMap;
 type R = Result<(), Box<dyn std::error::Error>>;
-fn apply(s: &mut State, a: &str, t: u64, action: Action) -> wire::Result<()> {
+fn apply(s: &mut State, a: &str, t: u64, action: Action) -> protocol::Result<()> {
     s.apply(a, s.revision, t, action)
 }
 #[test]

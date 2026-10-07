@@ -1,4 +1,12 @@
-//! Version 1 wire types. These `derive(Message)` definitions are the canonical wire schema.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+//! Canonical protocol schema and transport-independent errors.
+//!
+//! The `derive(Message)` definitions below are the canonical protocol schema, version 1.
+mod error;
+pub use error::{Error, Result};
+
+pub mod ipld;
+
 /// Shared human-readable identifier syntax. Protocol names additionally require ASCII.
 pub fn validate_identifier(value: &str) -> crate::Result<()> {
     const MAX_IDENTIFIER_BYTES: usize = 128;
@@ -33,8 +41,6 @@ pub fn validate_game_profile(value: &str) -> crate::Result<()> {
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use prost::Message;
 use sha2::{Digest, Sha256};
-
-use crate::{Error, Result};
 
 pub const DIRECTORY_PROTOCOL: &str = "/jlucraft/union/directory/1";
 pub const GOVERNANCE_PROTOCOL: &str = "/jlucraft/union/governance/3";
@@ -708,7 +714,7 @@ pub struct TrustCheckpoint {
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-#[allow(clippy::large_enum_variant)] // Keep the signed wire record directly available to callers.
+#[allow(clippy::large_enum_variant)] // Keep the signed protocol record directly available to callers.
 pub enum TrustRequest {
     Genesis,
     Read { checkpoint: TrustCheckpoint },

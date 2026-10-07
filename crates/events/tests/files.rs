@@ -1,8 +1,5 @@
 use events::files::FileStore;
-use wire::{
-    Result,
-    protocol::{Cid, FileLayout, FileNode, IpldBlock},
-};
+use protocol::{Cid, FileLayout, FileNode, IpldBlock, Result};
 #[test]
 fn standard_cid_diff_checkpoint_history_and_corruption() -> Result<()> {
     assert_eq!(
@@ -36,7 +33,7 @@ fn standard_cid_diff_checkpoint_history_and_corruption() -> Result<()> {
     let bad = IpldBlock::node(&FileNode::File {
         parent: Some(parent.link()),
         size: 0,
-        checksum: wire::protocol::digest(b""),
+        checksum: protocol::digest(b""),
         depth: 1,
         layout: FileLayout::Diff {
             offset: u64::MAX,

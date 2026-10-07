@@ -32,7 +32,7 @@ pub async fn request<D: Domain>(
     genesis_hash: &str,
     request: Request,
 ) -> Result<Response<D>> {
-    wire::protocol::validate_digest(genesis_hash)
+    protocol::validate_digest(genesis_hash)
         .map_err(|_| Error::protocol("a pinned lowercase genesis SHA-256 is required"))?;
     let mut response = exchange(
         node,

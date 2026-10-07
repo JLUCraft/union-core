@@ -29,8 +29,8 @@ impl Error {
     pub fn protocol(cause: impl std::fmt::Display) -> Self {
         Self::Protocol(cause.to_string())
     }
-    pub fn failure(&self) -> crate::protocol::ClientFailure {
-        use crate::protocol::ClientErrorCode as Code;
+    pub fn failure(&self) -> crate::ClientFailure {
+        use crate::ClientErrorCode as Code;
         let code = match self {
             Self::Identity(_) => Code::IdentityUnavailable,
             Self::AuthorityUnavailable => Code::AuthorityUnavailable,
@@ -42,7 +42,7 @@ impl Error {
             Self::Capacity => Code::Capacity,
             Self::Io(_) => Code::OperationFailed,
         };
-        crate::protocol::ClientFailure {
+        crate::ClientFailure {
             code,
             message: self.to_string(),
         }
@@ -54,7 +54,7 @@ mod tests {
     use super::*;
     #[test]
     fn failure_codes_do_not_depend_on_diagnostic_text() {
-        use crate::protocol::ClientErrorCode;
+        use crate::ClientErrorCode;
         assert_eq!(
             Error::AuthorityUnavailable.failure().code,
             ClientErrorCode::AuthorityUnavailable

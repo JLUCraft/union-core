@@ -1,7 +1,7 @@
 //! Signed block upload followed by a single compare-and-swap directory commit.
 use crate::{Error, Identity, Node, PeerId, Result};
 use authority::journal;
-use wire::protocol::{Cid, FileNode, IpldBlock};
+use protocol::{Cid, FileNode, IpldBlock};
 pub type Office = flows::Flows<events::EventsDomain>;
 pub type Snapshot = state::State<Office>;
 pub async fn snapshot(node: &Node, peer: PeerId, genesis: &str) -> Result<Snapshot> {
@@ -117,29 +117,29 @@ async fn apply_with_identity(
 pub async fn push(
     node: &Node,
     peer: PeerId,
-    request: &wire::protocol::OfficePushRequest,
-) -> Result<wire::protocol::OfficePushResponse> {
+    request: &protocol::OfficePushRequest,
+) -> Result<protocol::OfficePushResponse> {
     let service = node
         .list_services(peer)
         .await?
         .into_iter()
-        .find(|r| r.protocol == wire::protocol::OFFICE_PUSH_PROTOCOL)
+        .find(|r| r.protocol == protocol::OFFICE_PUSH_PROTOCOL)
         .ok_or(Error::NotFound)?
         .id
         .parse()
         .map_err(|_| Error::Denied)?;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let mut stream = node.open_service(peer, service).await?;
-        wire::protocol::write_frame(
+        protocol::write_frame(
             &mut stream,
-            &wire::protocol::JsonFrame {
+            &protocol::JsonFrame {
                 json: serde_json::to_vec(request).map_err(|e| Error::Protocol(e.to_string()))?,
                 sequence: 0,
                 last: true,
             },
         )
         .await?;
-        let frame: wire::protocol::JsonFrame = wire::protocol::read_frame(&mut stream).await?;
+        let frame: protocol::JsonFrame = protocol::read_frame(&mut stream).await?;
         if frame.sequence != 0 || !frame.last {
             return Err(Error::Denied);
         }

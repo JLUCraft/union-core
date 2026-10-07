@@ -8,7 +8,7 @@ publish = false
 consensus = ["dep:openraft", "journal/consensus"]
 
 [dependencies]
-wire = { path = "../wire" }
+protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 state = { path = "../state" }
 node = { path = "../node" }

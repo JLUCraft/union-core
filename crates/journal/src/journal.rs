@@ -215,7 +215,7 @@ pub struct Response<D: Domain> {
     pub genesis: Option<State<D>>,
     pub state: Option<State<D>>,
     pub error: Option<String>,
-    pub error_code: Option<wire::protocol::ClientErrorCode>,
+    pub error_code: Option<protocol::ClientErrorCode>,
     pub proof: Option<SnapshotProof>,
 }
 

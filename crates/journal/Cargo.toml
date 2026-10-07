@@ -9,7 +9,7 @@ consensus = ["dep:openraft", "dep:uuid"]
 
 [dependencies]
 uuid = { version = "1", features = ["v4"], optional = true }
-wire = { path = "../wire" }
+protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 state = { path = "../state" }
 serde = { version = "1", features = ["derive"] }

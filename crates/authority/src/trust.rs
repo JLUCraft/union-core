@@ -1,11 +1,11 @@
 //! Identity replication verifies records, never trusts remote state snapshots.
 use crate::{Error, Node, PeerId, Result};
 pub use journal::trust::{TrustLog, TrustView};
-use std::{sync::Arc, time::Duration};
-use tokio::sync::Mutex;
-use wire::protocol::{
+use protocol::{
     self, JsonFrame, MAX_TRUST_PAGE, MAX_TRUST_RECORD, TRUST_PROTOCOL, TrustRequest, TrustResponse,
 };
+use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK: usize = protocol::MAX_FRAME - 128;
 const MAX_RESPONSE: usize = MAX_TRUST_PAGE * MAX_TRUST_RECORD + CHUNK;

@@ -1,16 +1,16 @@
 //! Replay-only identity facts. Signatures bind the federation, genesis and exact log parent.
 use crate::{Error, Identity, PeerId, PublicKey, Result};
-use std::collections::{BTreeMap, BTreeSet};
-use wire::protocol::{MAX_TRUST_RECORD, TRUST_SIGNING_DOMAIN, digest};
-pub use wire::protocol::{
+use protocol::{MAX_TRUST_RECORD, TRUST_SIGNING_DOMAIN, digest};
+pub use protocol::{
     TrustAction, TrustCheckpoint, TrustFounder, TrustGenesis, TrustRecord, TrustSignature,
 };
+use std::collections::{BTreeMap, BTreeSet};
 const MAX_CHAIRS: usize = 128;
 const MAX_DEVICES: usize = 8;
 const MAX_EVIDENCE_TYPES: usize = 128;
 const MAX_FACTS: usize = 100_000;
 
-use wire::protocol::validate_identifier as identifier;
+use protocol::validate_identifier as identifier;
 fn json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|e| Error::Protocol(e.to_string()))
 }
@@ -320,7 +320,7 @@ impl TrustState {
                     }))
                     || !self.signed_member(member, signers)
                     || !self.is_member(member, club)
-                    || wire::protocol::validate_game_profile(profile).is_err()
+                    || protocol::validate_game_profile(profile).is_err()
                     || self
                         .profiles
                         .iter()

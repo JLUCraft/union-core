@@ -240,13 +240,13 @@ dependencies = [
  "journal",
  "node",
  "openraft",
+ "protocol",
  "serde",
  "serde_json",
  "state",
  "tempfile",
  "tokio",
  "tracing",
- "wire",
 ]
 
 [[package]]
@@ -541,11 +541,11 @@ dependencies = [
  "identity",
  "league",
  "node",
+ "protocol",
  "serde",
  "serde_json",
  "state",
  "tokio",
- "wire",
 ]
 
 [[package]]
@@ -948,12 +948,12 @@ dependencies = [
  "authority",
  "identity",
  "node",
+ "protocol",
  "serde",
  "serde_json",
  "state",
  "tempfile",
  "tokio",
- "wire",
 ]
 
 [[package]]
@@ -999,11 +999,11 @@ dependencies = [
  "authority",
  "events",
  "identity",
+ "protocol",
  "serde",
  "serde_json",
  "state",
  "tempfile",
- "wire",
 ]
 
 [[package]]
@@ -1600,10 +1600,10 @@ name = "identity"
 version = "0.2.0"
 dependencies = [
  "libp2p-identity",
+ "protocol",
  "serde",
  "serde_json",
  "tempfile",
- "wire",
 ]
 
 [[package]]
@@ -1807,13 +1807,13 @@ version = "0.2.0"
 dependencies = [
  "identity",
  "openraft",
+ "protocol",
  "serde",
  "serde_json",
  "state",
  "tempfile",
  "tokio",
  "uuid",
- "wire",
 ]
 
 [[package]]
@@ -1838,11 +1838,11 @@ version = "0.2.0"
 dependencies = [
  "authority",
  "identity",
+ "protocol",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "state",
- "wire",
 ]
 
 [[package]]
@@ -2342,6 +2342,7 @@ dependencies = [
  "identity",
  "league",
  "node",
+ "protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -2349,7 +2350,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "wire",
 ]
 
 [[package]]
@@ -2584,12 +2584,12 @@ dependencies = [
  "libp2p",
  "libp2p-stream",
  "prost",
+ "protocol",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "uuid",
- "wire",
 ]
 
 [[package]]
@@ -2960,6 +2960,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "protocol"
+version = "0.2.0"
+dependencies = [
+ "futures",
+ "multibase",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3653,9 +3666,9 @@ version = "0.2.0"
 dependencies = [
  "identity",
  "multiaddr",
+ "protocol",
  "serde",
  "serde_json",
- "wire",
 ]
 
 [[package]]
@@ -4130,13 +4143,13 @@ dependencies = [
  "node",
  "openraft",
  "prost",
+ "protocol",
  "serde",
  "serde_json",
  "state",
  "tempfile",
  "tokio",
  "uuid",
- "wire",
 ]
 
 [[package]]
@@ -4583,19 +4596,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "wire"
-version = "0.2.0"
-dependencies = [
- "futures",
- "multibase",
- "prost",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
 ]
 
 [[package]]

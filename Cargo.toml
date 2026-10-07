@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["crates/league", "crates/journal", "crates/node", "crates/authority", "crates/client", "crates/wire", "crates/identity", "crates/state", "crates/events", "crates/flows", "crates/llm-gateway", "crates/terminal-runtime", "tests"]
-default-members = ["crates/league", "crates/journal", "crates/node", "crates/authority", "crates/client", "crates/wire", "crates/identity", "crates/state", "crates/events", "crates/flows", "crates/llm-gateway", "crates/terminal-runtime", "tests"]
+members = ["crates/league", "crates/journal", "crates/node", "crates/authority", "crates/client", "crates/protocol", "crates/identity", "crates/state", "crates/events", "crates/flows", "crates/llm-gateway", "crates/terminal-runtime", "tests"]
+default-members = ["crates/league", "crates/journal", "crates/node", "crates/authority", "crates/client", "crates/protocol", "crates/identity", "crates/state", "crates/events", "crates/flows", "crates/llm-gateway", "crates/terminal-runtime", "tests"]

@@ -2,7 +2,7 @@
 //! Deterministic governance transitions; no socket or runtime dependencies.
 pub use identity::PeerId;
 pub use multiaddr::{Multiaddr, Protocol as AddressProtocol};
-pub use wire::{Error, Result, protocol};
+pub use protocol::{self, Error, Result};
 pub mod governance;
 
 mod domain;

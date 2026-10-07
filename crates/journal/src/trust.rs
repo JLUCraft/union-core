@@ -1,6 +1,9 @@
 //! Append-only identity history with pinned genesis and durable anti-rollback checkpoints.
 use crate::{Error, Result};
 use identity::trust::TrustState;
+use protocol::{
+    MAX_TRUST_PAGE, MAX_TRUST_RECORD, TrustCheckpoint, TrustGenesis, TrustRecord, TrustRequirement,
+};
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
@@ -9,9 +12,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
-use wire::protocol::{
-    MAX_TRUST_PAGE, MAX_TRUST_RECORD, TrustCheckpoint, TrustGenesis, TrustRecord, TrustRequirement,
-};
 const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES: u64 = 1024;
 

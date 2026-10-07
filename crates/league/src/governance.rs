@@ -1,9 +1,9 @@
 use crate::{Error, Result};
+pub use protocol::digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use state::{Context, Domain};
 use std::collections::{BTreeMap, BTreeSet};
-pub use wire::protocol::digest;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Rules {
     pub cross_club: bool,

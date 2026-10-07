@@ -39,7 +39,7 @@ fn shared_budget_survives_restart_and_settlement_preserves_original_institution(
 fn ledger_requires_explicit_member_institution_attribution() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("ledger");
-    let previous = wire::protocol::digest(b"jlucraft/llm/usage/1");
+    let previous = protocol::digest(b"jlucraft/llm/usage/1");
     let invalid = serde_json::json!([{"previous":previous,"time_ms":1000,"event":{"type":"reserve","member":"alice","model":"local","purpose":"assistant.ask","tokens":70}}]);
     std::fs::write(&path, serde_json::to_vec(&invalid)?)?;
     assert!(Ledger::open(path).is_err());

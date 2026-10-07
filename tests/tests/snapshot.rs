@@ -7,7 +7,6 @@ use node::{Node, NodeConfig};
 use state::governance::Member;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::Mutex, time::timeout};
-use wire::protocol;
 #[tokio::test]
 async fn snapshot_exceeds_single_frame_and_rejects_out_of_order_chunks()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -54,7 +53,7 @@ async fn snapshot_exceeds_single_frame_and_rejects_out_of_order_chunks()
         let mut incoming = rogue.accept_protocol(journal::PROTOCOL)?;
         client.dial(rogue.addresses()[0].clone()).await?;
         let attack = tokio::spawn(async move {
-            let (_, mut stream) = incoming.next().await.ok_or(wire::Error::Stopped)?;
+            let (_, mut stream) = incoming.next().await.ok_or(protocol::Error::Stopped)?;
             let _: JsonFrame = protocol::read_frame(&mut stream).await?;
             protocol::write_frame(
                 &mut stream,

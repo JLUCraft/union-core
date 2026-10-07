@@ -1,4 +1,4 @@
-//! Shared presentation inputs for native management terminals. Wire actions remain authoritative.
+//! Shared presentation inputs for native management terminals. Protocol actions are the source of truth.
 use crate::protocol::{TrustAction, TrustFounder, TrustGenesis, TrustRecord, validate_identifier};
 use crate::trust::{Config, TrustState};
 use crate::{Error, Identity, PeerId, Result, ServiceId};
@@ -31,7 +31,7 @@ pub enum FieldKind {
 }
 
 // These are empty form templates, not identities or sample production records. Serializing the
-// actual wire enum keeps field names, action names and collection shapes tied to that definition.
+// actual protocol enum keeps field names, action names and collection shapes tied to that definition.
 fn templates() -> Vec<TrustAction> {
     let empty = String::new;
     vec![

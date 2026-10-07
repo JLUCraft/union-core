@@ -3,6 +3,6 @@
 mod identity;
 pub use identity::Identity;
 pub use libp2p_identity::{Keypair, PeerId, PublicKey};
-pub use wire::{Error, Result};
+pub use protocol::{Error, Result};
 
 pub mod trust;

@@ -3,12 +3,12 @@ mod support;
 use identity::{Identity, trust::TrustState};
 use journal::{journal::Journal, trust::TrustLog};
 use node::{Node, NodeConfig};
+use protocol::{
+    TrustBusinessBinding, TrustCheckpoint, TrustFounder, TrustGenesis, TrustRequest, digest,
+};
 use state::{EmptyDomain, State};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
-use wire::protocol::{
-    TrustBusinessBinding, TrustCheckpoint, TrustFounder, TrustGenesis, TrustRequest, digest,
-};
 
 #[tokio::test]
 async fn identity_genesis_discovery_round_trips_and_bypasses_the_stale_view_gate() {

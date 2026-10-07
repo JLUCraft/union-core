@@ -1,18 +1,15 @@
 //! Host-owned document storage. Read permission covers one configured collection.
 use node::{Node, PeerId, ServiceId};
+use protocol::{DocumentChunk, DocumentRequest, Error, Result, digest, read_frame, write_frame};
 use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
-use wire::{
-    Error, Result,
-    protocol::{DocumentChunk, DocumentRequest, digest, read_frame, write_frame},
-};
 pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const CHUNK_BYTES: usize = 32 * 1024;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
-use wire::protocol::validate_digest;
+use protocol::validate_digest;
 fn bounded_read(path: &Path) -> Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     if !file.metadata()?.is_file() {

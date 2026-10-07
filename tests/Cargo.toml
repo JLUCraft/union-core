@@ -17,7 +17,7 @@ identity = { path = "../crates/identity" }
 state = { path = "../crates/state" }
 events = { path = "../crates/events" }
 flows = { path = "../crates/flows" }
-wire = { path = "../crates/wire" }
+protocol = { path = "../crates/protocol" }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

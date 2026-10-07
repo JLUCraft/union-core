@@ -1,7 +1,7 @@
 use futures::io::Cursor;
 use identity::Identity;
 use node::Error;
-use wire::protocol::{self, DirectoryRequest};
+use protocol::{self, DirectoryRequest};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -49,7 +49,7 @@ async fn bounded_framing_rejects_oversized_and_truncated_input() -> TestResult {
     );
     let mut bytes = Cursor::new(Vec::new());
     protocol::write_frame(&mut bytes, &DirectoryRequest {}).await?;
-    // Golden wire fixture: empty protobuf request with a four-byte length prefix.
+    // Golden frame fixture: empty protobuf request with a four-byte length prefix.
     assert_eq!(bytes.get_ref(), &[0, 0, 0, 0]);
     bytes.set_position(0);
     let _: DirectoryRequest = protocol::read_frame(&mut bytes).await?;

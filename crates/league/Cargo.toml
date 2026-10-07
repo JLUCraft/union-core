@@ -10,7 +10,7 @@ consensus = ["runtime", "authority/consensus"]
 
 [dependencies]
 state = { path = "../state" }
-wire = { path = "../wire" }
+protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 authority = { path = "../authority", optional = true }
 serde = { version = "1", features = ["derive"] }

@@ -73,7 +73,7 @@ fn business_schema_contains_only_service_actions_and_requires_identity_binding()
     }
     for kind in ["map_legacy", "approve_migration"] {
         assert!(
-            serde_json::from_value::<wire::protocol::TrustAction>(serde_json::json!({"type":kind}))
+            serde_json::from_value::<protocol::TrustAction>(serde_json::json!({"type":kind}))
                 .is_err()
         );
     }

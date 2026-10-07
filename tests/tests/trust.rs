@@ -3,8 +3,8 @@ use identity::{
     trust::{self, TrustState},
 };
 use journal::trust::TrustLog;
+use protocol::*;
 use std::{collections::BTreeMap, time::Duration};
-use wire::protocol::*;
 struct Fixture {
     roots: Vec<Identity>,
     genesis: TrustGenesis,

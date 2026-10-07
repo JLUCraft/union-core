@@ -59,7 +59,7 @@ async fn events_invalidate_snapshots_and_reject_outsiders() -> Result<(), Box<dy
         loop {
             let event = events::next(&mut stream).await?;
             if event.revision == 1 {
-                return Ok::<_, wire::Error>(());
+                return Ok::<_, protocol::Error>(());
             }
         }
     })

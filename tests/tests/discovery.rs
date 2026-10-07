@@ -34,14 +34,14 @@ async fn service_discovery_through_seed_then_authenticated_directory()
     client.dial(seed.addresses()[0].clone()).await?;
     let id = ServiceId::new();
     let service = Service {
-        metadata: serde_json::to_vec(&wire::protocol::RoomMetadata {
+        metadata: serde_json::to_vec(&protocol::RoomMetadata {
             school: "other-school".into(),
             version: "26.3".into(),
             players_max: 12,
         })?,
         id,
         name: "Discovered game".into(),
-        protocol: wire::protocol::ROOM_PROTOCOL.into(),
+        protocol: protocol::ROOM_PROTOCOL.into(),
         access: AccessPolicy::Deny,
     };
     timeout(Duration::from_secs(20), async {
@@ -52,12 +52,12 @@ async fn service_discovery_through_seed_then_authenticated_directory()
             }
             sleep(Duration::from_millis(100)).await;
         }
-        Ok::<_, wire::Error>(())
+        Ok::<_, protocol::Error>(())
     })
     .await??;
     assert!(
         client
-            .discover_protocol(wire::protocol::ROOM_PROTOCOL)
+            .discover_protocol(protocol::ROOM_PROTOCOL)
             .await?
             .contains(&host.peer_id())
     );

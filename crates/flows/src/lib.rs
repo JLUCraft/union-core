@@ -1,12 +1,12 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Versioned, deterministic approval workflows composed around another Domain.
+use protocol::{Error, Result};
 use serde::{Deserialize, Serialize};
 use state::{Context, CoreView, Domain};
 use std::{
     collections::{BTreeMap, BTreeSet},
     marker::PhantomData,
 };
-use wire::{Error, Result};
 
 const MAX_RECORDS: usize = 10_000;
 const MAX_STAGES: usize = 16;
@@ -53,7 +53,7 @@ pub enum Approver {
         worker: String,
         model: String,
         purpose: String,
-        privacy: wire::protocol::Privacy,
+        privacy: protocol::Privacy,
         max_tokens: u32,
     },
     Member {
@@ -94,7 +94,7 @@ pub struct Instance<D: Domain> {
     pub template_epoch: u64,
     pub payload: D::Action,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<wire::protocol::Cid>,
+    pub input: Option<protocol::Cid>,
     pub proposer: String,
     pub proposer_device: String,
     pub current: usize,
@@ -121,7 +121,7 @@ pub struct AiRun {
     pub retry_requested: bool,
     pub job: String,
     pub device: String,
-    pub output: Option<wire::protocol::Cid>,
+    pub output: Option<protocol::Cid>,
     pub error: Option<String>,
 }
 #[derive(Clone, Debug)]
@@ -130,11 +130,11 @@ pub struct AiJob {
     pub instance: String,
     pub job: String,
     pub attempt: usize,
-    pub input: wire::protocol::Cid,
+    pub input: protocol::Cid,
     pub worker: String,
     pub model: String,
     pub purpose: String,
-    pub privacy: wire::protocol::Privacy,
+    pub privacy: protocol::Privacy,
     pub max_tokens: u32,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -209,7 +209,7 @@ pub enum FlowAction<D: Domain> {
         instance: String,
         job: String,
         attempt: usize,
-        output: Option<wire::protocol::Cid>,
+        output: Option<protocol::Cid>,
         error: Option<String>,
     },
     #[serde(rename = "flows.retry_ai")]
@@ -222,7 +222,7 @@ pub enum FlowAction<D: Domain> {
     StartRequirements {
         id: String,
         payload: D::Action,
-        input: wire::protocol::Cid,
+        input: protocol::Cid,
         stage: Stage,
     },
     #[serde(rename = "flows.start")]
@@ -231,7 +231,7 @@ pub enum FlowAction<D: Domain> {
         template: String,
         payload: D::Action,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        input: Option<wire::protocol::Cid>,
+        input: Option<protocol::Cid>,
     },
     #[serde(rename = "flows.approve")]
     Approve {
@@ -671,7 +671,7 @@ impl<D: Domain> Domain for Flows<D> {
                     FlowAction::Reject { instance, reason } => (instance, reason, true),
                     _ => return Err(Error::Denied),
                 };
-                wire::protocol::validate_digest(&comment_hash)?;
+                protocol::validate_digest(&comment_hash)?;
                 let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
                 let template = template_for(&state.flow_templates, flow)?.clone();
                 let stage = template.stages.get(flow.current).ok_or(Error::Denied)?;
@@ -877,7 +877,7 @@ pub fn ai_job<D: Domain>(state: &FlowsState<D>, id: &str) -> Result<Option<AiJob
     Ok(Some(AiJob {
         mode: *mode,
         instance: id.into(),
-        job: wire::protocol::digest(&bytes),
+        job: protocol::digest(&bytes),
         attempt: runs.len(),
         input,
         worker: worker.clone(),
@@ -891,7 +891,7 @@ pub fn ai_job<D: Domain>(state: &FlowsState<D>, id: &str) -> Result<Option<AiJob
 struct StartDefinition<D: Domain> {
     id: String,
     payload: D::Action,
-    input: Option<wire::protocol::Cid>,
+    input: Option<protocol::Cid>,
     definition: Template,
     reference: Option<(String, u64)>,
 }

@@ -1,4 +1,5 @@
 use crate::{Error, Result};
+use protocol::digest;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -6,7 +7,6 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
-use wire::protocol::digest;
 
 const DAY_MS: u64 = 86_400_000;
 const MAX_LEDGER_BYTES: u64 = 64 * 1024 * 1024;
