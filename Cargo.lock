@@ -4128,21 +4128,17 @@ dependencies = [
  "authority",
  "client",
  "events",
- "flows",
  "futures",
  "identity",
  "journal",
  "league",
  "node",
  "openraft",
- "prost",
  "protocol",
- "serde",
  "serde_json",
  "state",
  "tempfile",
  "tokio",
- "uuid",
 ]
 
 [[package]]
