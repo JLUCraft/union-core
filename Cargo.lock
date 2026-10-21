@@ -2576,9 +2576,7 @@ dependencies = [
  "journal",
  "libp2p",
  "libp2p-stream",
- "prost",
  "protocol",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -3780,11 +3778,9 @@ name = "terminal-runtime"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "authority",
  "clap",
  "futures",
  "node",
- "state",
  "tokio",
  "tokio-util",
  "tracing",

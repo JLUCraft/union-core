@@ -5,9 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-state = { path = "../state" }
 node = { path = "../node" }
-authority = { path = "../authority" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }

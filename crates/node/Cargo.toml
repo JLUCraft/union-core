@@ -8,12 +8,10 @@ publish = false
 protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 journal = { path = "../journal" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
 libp2p = { version = "0.57", features = ["tokio", "tcp", "quic", "noise", "yamux", "identify", "ping", "relay", "dcutr", "macros", "kad", "mdns", "autonat", "dns"] }
 libp2p-stream = "=0.5.0-alpha"
-prost = "0.14"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 tracing = "0.1"
