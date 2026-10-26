@@ -5,14 +5,12 @@ edition = "2024"
 publish = false
 
 [features]
-documents = ["dep:events", "events/documents"]
-league = ["dep:league"]
-office = ["dep:events", "dep:flows"]
+documents = ["events/documents"]
 
 [dependencies]
-events = { path = "../events", optional = true }
-flows = { path = "../flows", optional = true }
-league = { path = "../league", optional = true }
+events = { path = "../events" }
+flows = { path = "../flows" }
+league = { path = "../league" }
 protocol = { path = "../protocol" }
 identity = { path = "../identity" }
 node = { path = "../node" }

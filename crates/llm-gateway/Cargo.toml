@@ -5,23 +5,16 @@ edition = "2024"
 publish = false
 
 [dependencies]
-authority = { path = "../authority" }
-state = { path = "../state" }
-node = { path = "../node" }
-identity = { path = "../identity" }
 protocol = { path = "../protocol" }
-client = { path = "../client" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 futures = "0.3"
 reqwest = { version = "0.13", features = ["json", "stream"] }
-tempfile = "3"
 
 [lints.rust]
 unsafe_code = "forbid"
 
 [dev-dependencies]
-league = { path = "../league", features = ["runtime"] }
-client = { path = "../client", features = ["league"] }
+tempfile = "3"

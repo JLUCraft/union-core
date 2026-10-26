@@ -6,6 +6,7 @@ publish = false
 [features]
 documents = ["dep:node", "dep:tokio"]
 [dependencies]
+league = { path = "../league" }
 node = { path = "../node", optional = true }
 tokio = { version = "1", features = ["rt", "time", "sync", "fs"], optional = true }
 state = { path = "../state" }

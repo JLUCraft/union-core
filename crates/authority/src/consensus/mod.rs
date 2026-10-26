@@ -162,9 +162,9 @@ impl<D: Domain> Cluster<D> {
     pub async fn snapshot(&self, actor: crate::PeerId) -> Result<State<D>> {
         self.response(actor).await?.state.ok_or(Error::Denied)
     }
-    pub async fn serve(self: Arc<Self>) -> Result<()> {
+    pub async fn serve(self: Arc<Self>, protocol: &'static str) -> Result<()> {
         tokio::select! {
-            result = network::serve(self.clone()) => result,
+            result = network::serve(self.clone(), protocol) => result,
             result = self.maintain_membership() => result,
         }
     }

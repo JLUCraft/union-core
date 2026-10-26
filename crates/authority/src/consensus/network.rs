@@ -172,9 +172,9 @@ impl RaftNetwork<TypeConfig> for Connection {
             .await
     }
 }
-pub async fn serve<D: Domain>(cluster: Arc<Cluster<D>>) -> Result<()> {
+pub async fn serve<D: Domain>(cluster: Arc<Cluster<D>>, protocol: &'static str) -> Result<()> {
     let mut rpc = cluster.node.accept_protocol(PROTOCOL)?;
-    let mut governance = cluster.node.accept_protocol(crate::journal::PROTOCOL)?;
+    let mut governance = cluster.node.accept_protocol(protocol)?;
     let capacity = Arc::new(Semaphore::new(128));
     let mut tasks = JoinSet::new();
     loop {
@@ -441,7 +441,7 @@ mod clock_network_tests {
                     (log.clone(), view.clone()),
                 )
                 .await?;
-                serving.spawn(cluster.clone().serve());
+                serving.spawn(cluster.clone().serve(crate::journal::PROTOCOL));
                 clusters.push(cluster);
             }
             tokio::task::yield_now().await;

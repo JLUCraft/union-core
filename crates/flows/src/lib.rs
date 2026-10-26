@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Versioned, deterministic approval workflows composed around another Domain.
+pub mod ai;
 use protocol::{Error, Result};
 use serde::{Deserialize, Serialize};
 use state::{Context, CoreView, Domain};
@@ -12,6 +13,7 @@ const MAX_RECORDS: usize = 10_000;
 const MAX_STAGES: usize = 16;
 const MAX_VERSIONS: usize = 32;
 const MAX_TIMEOUT_MS: u64 = 30 * 86_400_000;
+const MAX_APPROVAL_CLUBS: usize = 128;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Flows<D: Domain>(PhantomData<D>);
@@ -24,6 +26,20 @@ pub struct FlowsState<D: Domain> {
     pub flow_templates: BTreeMap<String, Versions>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub flows: BTreeMap<String, Instance<D>>,
+    pub ai_pricing: BTreeMap<String, ai::AiPricing>,
+    pub ai_workers: BTreeMap<String, ai::AiWorker>,
+    pub ai_burned_points: u64,
+}
+impl<D: Domain> std::ops::Deref for FlowsState<D> {
+    type Target = D::State;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+impl<D: Domain> std::ops::DerefMut for FlowsState<D> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Versions {
@@ -67,6 +83,9 @@ pub enum Approver {
         clubs: BTreeSet<String>,
         quorum: usize,
     },
+    ClubPresidents {
+        clubs: BTreeSet<String>,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +116,9 @@ pub struct Instance<D: Domain> {
     pub input: Option<protocol::Cid>,
     pub proposer: String,
     pub proposer_device: String,
+    pub started_ms: u64,
+    pub payer: protocol::PointAccount,
+    pub allowance: Option<protocol::AiAllowance>,
     pub current: usize,
     pub records: Vec<StageRecord>,
     pub status: Status,
@@ -104,6 +126,9 @@ pub struct Instance<D: Domain> {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StageRecord {
+    pub billing: Option<ai::Billing>,
+    pub escrowed_points: u64,
+    pub refunded_points: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ai_runs: Vec<AiRun>,
     pub approvals: BTreeMap<String, Approval>,
@@ -121,6 +146,9 @@ pub struct AiRun {
     pub retry_requested: bool,
     pub job: String,
     pub device: String,
+    pub usage: Option<protocol::LlmUsage>,
+    pub charged_points: u64,
+    pub refunded_points: u64,
     pub output: Option<protocol::Cid>,
     pub error: Option<String>,
 }
@@ -181,6 +209,7 @@ pub fn validate_ai_output(mode: AiMode, bytes: &[u8]) -> Result<Option<AiReview>
     Ok(Some(review))
 }
 
+pub const MAX_AI_OUTPUT_TOKENS: u32 = 8192;
 const MAX_AI_ATTEMPTS: usize = 8;
 fn is_false(value: &bool) -> bool {
     !*value
@@ -198,6 +227,25 @@ pub struct Delegation {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", bound = "")]
 pub enum FlowAction<D: Domain> {
+    #[serde(rename = "flows.ai_pricing")]
+    AiPricing {
+        model: String,
+        pricing: ai::AiPricing,
+    },
+    #[serde(rename = "flows.ai_worker")]
+    AiWorker {
+        models: BTreeSet<String>,
+        active: bool,
+    },
+    #[serde(rename = "flows.request_ai")]
+    RequestAi {
+        id: String,
+        input: protocol::Cid,
+        worker: String,
+        model: String,
+        max_tokens: u32,
+        max_points: u64,
+    },
     #[serde(rename = "flows.claim_ai")]
     ClaimAi {
         instance: String,
@@ -210,6 +258,7 @@ pub enum FlowAction<D: Domain> {
         job: String,
         attempt: usize,
         output: Option<protocol::Cid>,
+        usage: Option<protocol::LlmUsage>,
         error: Option<String>,
     },
     #[serde(rename = "flows.retry_ai")]
@@ -225,10 +274,13 @@ pub enum FlowAction<D: Domain> {
         input: protocol::Cid,
         stage: Stage,
     },
+    #[serde(rename = "flows.start_presidents")]
+    StartPresidents { id: String, payload: D::Action },
     #[serde(rename = "flows.start")]
     Start {
         id: String,
         template: String,
+        max_points: u64,
         payload: D::Action,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<protocol::Cid>,
@@ -253,6 +305,12 @@ pub enum FlowAction<D: Domain> {
 }
 fn text(s: &str) -> Result<()> {
     state::governance::identifier(s)
+}
+fn administer(ctx: &Context<'_>) -> bool {
+    ctx.core.admins.contains(ctx.actor)
+        || ctx
+            .member()
+            .is_ok_and(|(_, m)| m.roles.contains("president"))
 }
 fn kind<A: Serialize>(action: &A) -> Result<String> {
     serde_json::to_value(action)
@@ -279,6 +337,11 @@ fn eligible(approver: &Approver, core: CoreView<'_>, device: &str) -> Option<Str
             Some("role".into())
         }
         Approver::ClubQuorum { clubs, .. } if clubs.contains(&m.club) => Some(m.club.clone()),
+        Approver::ClubPresidents { clubs }
+            if clubs.contains(&m.club) && m.roles.contains("president") =>
+        {
+            Some(m.club.clone())
+        }
         _ => None,
     }
 }
@@ -307,6 +370,7 @@ fn authorized(
 fn threshold(approver: &Approver) -> Result<usize> {
     Ok(match approver {
         Approver::ClubQuorum { quorum, .. } => *quorum,
+        Approver::ClubPresidents { clubs } => clubs.len(),
         _ => 1,
     })
 }
@@ -360,6 +424,21 @@ fn validate_template(template: &Template, core: CoreView<'_>) -> Result<()> {
             return Err(Error::Denied);
         }
         match &stage.approver {
+            Approver::ClubPresidents { clubs } => {
+                if clubs.is_empty()
+                    || clubs.len() > MAX_APPROVAL_CLUBS
+                    || stage.timeout_ms.is_some()
+                    || stage.on_timeout != TimeoutPolicy::Reject
+                    || clubs.iter().any(|club| {
+                        !core
+                            .members
+                            .values()
+                            .any(|m| &m.club == club && m.roles.contains("president"))
+                    })
+                {
+                    return Err(Error::Denied);
+                }
+            }
             Approver::Ai {
                 worker,
                 model,
@@ -369,7 +448,7 @@ fn validate_template(template: &Template, core: CoreView<'_>) -> Result<()> {
             } => {
                 if !core.members.contains_key(worker)
                     || *max_tokens == 0
-                    || *max_tokens > 8192
+                    || *max_tokens > MAX_AI_OUTPUT_TOKENS
                     || stage.on_timeout != TimeoutPolicy::Reject
                 {
                     return Err(Error::Denied);
@@ -389,7 +468,7 @@ fn validate_template(template: &Template, core: CoreView<'_>) -> Result<()> {
             Approver::ClubQuorum { clubs, quorum }
                 if (*quorum == 0
                     || *quorum > clubs.len()
-                    || clubs.len() > 128
+                    || clubs.len() > MAX_APPROVAL_CLUBS
                     || clubs
                         .iter()
                         .any(|club| !core.members.values().any(|m| &m.club == club))) =>
@@ -453,9 +532,76 @@ impl<D: Domain> Domain for Flows<D> {
     type Action = FlowAction<D>;
     fn transition(state: &mut Self::State, ctx: &Context<'_>, action: Self::Action) -> Result<()> {
         match action {
+            FlowAction::AiPricing { model, pricing } => {
+                if !ctx.core.admins.contains(ctx.actor) {
+                    return Err(Error::Denied);
+                }
+                text(&model)?;
+                pricing.validate()?;
+                if !state.ai_pricing.contains_key(&model) && state.ai_pricing.len() >= MAX_RECORDS {
+                    return Err(Error::Capacity);
+                }
+                state.ai_pricing.insert(model, pricing);
+            }
+            FlowAction::AiWorker { models, active } => {
+                let worker = ctx.member()?.0.to_owned();
+                if models.is_empty() || models.len() > MAX_RECORDS {
+                    return Err(Error::Denied);
+                }
+                for model in &models {
+                    text(model)?;
+                }
+                if !state.ai_workers.contains_key(&worker) && state.ai_workers.len() >= MAX_RECORDS
+                {
+                    return Err(Error::Capacity);
+                }
+                state
+                    .ai_workers
+                    .insert(worker, ai::AiWorker { models, active });
+            }
+            FlowAction::RequestAi {
+                id,
+                input,
+                worker,
+                model,
+                max_tokens,
+                max_points,
+            } => {
+                let payload = D::ai_document_action(&id, ctx.member()?.0, &worker)?;
+                let definition = Template {
+                    name: "Member AI request".into(),
+                    payload_kinds: [kind(&payload)?].into(),
+                    stages: vec![Stage {
+                        name: "Generate document".into(),
+                        approver: Approver::Ai {
+                            mode: AiMode::Generate,
+                            worker,
+                            model,
+                            purpose: "member.assist".into(),
+                            privacy: protocol::Privacy::Sensitive,
+                            max_tokens,
+                        },
+                        timeout_ms: Some(ai::MEMBER_REQUEST_TIMEOUT_MS),
+                        on_timeout: TimeoutPolicy::Reject,
+                    }],
+                };
+                begin(
+                    state,
+                    ctx,
+                    StartDefinition {
+                        id,
+                        payload,
+                        input: Some(input),
+                        definition,
+                        reference: None,
+                        automatic: false,
+                        max_points: Some(max_points),
+                    },
+                )?;
+            }
             FlowAction::Inner(action) => D::transition(&mut state.inner, ctx, action)?,
             FlowAction::InstallTemplate { id, template } => {
-                if !ctx.core.admins.contains(ctx.actor) {
+                if !administer(ctx) {
                     return Err(Error::Denied);
                 }
                 text(&id)?;
@@ -476,7 +622,7 @@ impl<D: Domain> Domain for Flows<D> {
                 versions.active = true;
             }
             FlowAction::RetireTemplate { id } => {
-                if !ctx.core.admins.contains(ctx.actor) {
+                if !administer(ctx) {
                     return Err(Error::Denied);
                 }
                 let versions = state.flow_templates.get_mut(&id).ok_or(Error::NotFound)?;
@@ -488,6 +634,7 @@ impl<D: Domain> Domain for Flows<D> {
             FlowAction::Start {
                 id,
                 template,
+                max_points,
                 payload,
                 input,
             } => {
@@ -506,6 +653,8 @@ impl<D: Domain> Domain for Flows<D> {
                         input,
                         definition,
                         reference: Some((template, epoch)),
+                        automatic: false,
+                        max_points: Some(max_points),
                     },
                 )?;
             }
@@ -518,6 +667,11 @@ impl<D: Domain> Domain for Flows<D> {
                 let worker = D::workflow_worker(&state.inner, &payload).ok_or(Error::Denied)?;
                 if ctx.member()?.0 != worker
                     || !matches!(&stage.approver,Approver::Ai{worker:owner,..} if owner==&worker)
+                {
+                    return Err(Error::Denied);
+                }
+                if D::workflow_input(&state.inner, &payload)?
+                    != D::artifact(&state.inner, &input.to_string())?
                 {
                     return Err(Error::Denied);
                 }
@@ -535,6 +689,39 @@ impl<D: Domain> Domain for Flows<D> {
                         input: Some(input),
                         definition,
                         reference: None,
+                        automatic: true,
+                        max_points: None,
+                    },
+                )?;
+            }
+            FlowAction::StartPresidents { id, payload } => {
+                let clubs = D::approval_clubs(&state.inner, &payload)?;
+                let (_, member) = ctx.member()?;
+                if clubs.is_empty()
+                    || !clubs.contains(&member.club)
+                    || !(ctx.core.admins.contains(ctx.actor)
+                        || ["president", "admin", "manager"]
+                            .iter()
+                            .any(|role| member.roles.contains(*role)))
+                    || D::requires_ai_review(&state.inner, &payload)
+                {
+                    return Err(Error::Denied);
+                }
+                begin(
+                    state,
+                    ctx,
+                    StartDefinition {
+                        id,
+                        payload: payload.clone(),
+                        input: None,
+                        definition: Template {
+                            name: "Club president approval".into(),
+                            stages: Vec::new(),
+                            payload_kinds: [kind(&payload)?].into(),
+                        },
+                        reference: None,
+                        automatic: false,
+                        max_points: Some(0),
                     },
                 )?;
             }
@@ -550,12 +737,24 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     return Err(Error::Denied);
                 }
+                if !state
+                    .ai_workers
+                    .get(&expected.worker)
+                    .is_some_and(|w| w.active && w.models.contains(&expected.model))
+                {
+                    return Err(Error::Denied);
+                }
                 let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
-                if flow.deadline_ms.is_some_and(|t| ctx.now_ms >= t) {
+                if flow.records[flow.current].escrowed_points == 0
+                    || flow.deadline_ms.is_some_and(|t| ctx.now_ms >= t)
+                {
                     return Err(Error::Denied);
                 }
                 flow.records[flow.current].ai_runs.push(AiRun {
                     review: None,
+                    usage: None,
+                    charged_points: 0,
+                    refunded_points: 0,
                     retry_requested: false,
                     job,
                     device: ctx.actor.into(),
@@ -568,9 +767,11 @@ impl<D: Domain> Domain for Flows<D> {
                 job,
                 attempt,
                 output,
+                usage,
                 error,
             } => {
-                if output.is_some() == error.is_some()
+                if output.is_some() != usage.is_some()
+                    || output.is_some() == error.is_some()
                     || error
                         .as_ref()
                         .is_some_and(|e| e.is_empty() || e.len() > 256)
@@ -587,6 +788,16 @@ impl<D: Domain> Domain for Flows<D> {
                 else {
                     return Err(Error::Denied);
                 };
+                if output.is_some()
+                    && flow.allowance.is_some()
+                    && D::workflow_input(&state.inner, &flow.payload)?
+                        != D::artifact(
+                            &state.inner,
+                            &flow.input.as_ref().ok_or(Error::Denied)?.to_string(),
+                        )?
+                {
+                    return Err(Error::Denied);
+                }
                 let review = output
                     .as_ref()
                     .map(|cid| {
@@ -600,6 +811,7 @@ impl<D: Domain> Domain for Flows<D> {
                     })
                     .transpose()?
                     .flatten();
+                ai::settle::<D>(state, ctx, &instance, &job, attempt, usage.as_ref())?;
                 let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
                 let template = template_for(&state.flow_templates, flow)?.clone();
                 let Approver::Ai { worker, .. } = &template.stages[flow.current].approver else {
@@ -627,6 +839,14 @@ impl<D: Domain> Domain for Flows<D> {
                 run.output = output;
                 run.error = error;
                 if success {
+                    if matches!(
+                        decision,
+                        Some(AiDecision::ChangesRequested | AiDecision::Reject)
+                    ) {
+                        for future in flow.records.iter_mut().skip(flow.current + 1) {
+                            ai::refund::<D>(&mut state.inner, future)?;
+                        }
+                    }
                     match decision {
                         Some(AiDecision::ChangesRequested) => {
                             flow.status = Status::ChangesRequested;
@@ -644,7 +864,9 @@ impl<D: Domain> Domain for Flows<D> {
                 let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
                 if flow.status != Status::Active
                     || !(ctx.core.admins.contains(ctx.actor)
-                        || ctx.member().is_ok_and(|(id, _)| id == flow.proposer))
+                        || ctx
+                            .member()
+                            .is_ok_and(|(id, _)| id == flow.proposer || id == flow.payer.member))
                 {
                     return Err(Error::Denied);
                 }
@@ -661,6 +883,7 @@ impl<D: Domain> Domain for Flows<D> {
                     return Err(Error::Denied);
                 }
                 run.retry_requested = true;
+                ai::reserve_retry::<D>(&mut state.inner, &mut flow.records[flow.current])?;
             }
             action @ (FlowAction::Approve { .. } | FlowAction::Reject { .. }) => {
                 let (instance, comment_hash, reject) = match action {
@@ -672,6 +895,8 @@ impl<D: Domain> Domain for Flows<D> {
                     _ => return Err(Error::Denied),
                 };
                 protocol::validate_digest(&comment_hash)?;
+                let existing = state.flows.get(&instance).ok_or(Error::NotFound)?;
+                D::approval_clubs(&state.inner, &existing.payload)?;
                 let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
                 let template = template_for(&state.flow_templates, flow)?.clone();
                 let stage = template.stages.get(flow.current).ok_or(Error::Denied)?;
@@ -683,6 +908,9 @@ impl<D: Domain> Domain for Flows<D> {
                 };
                 if reject {
                     record.rejected = Some(receipt);
+                    for record in &mut flow.records {
+                        ai::refund::<D>(&mut state.inner, record)?;
+                    }
                     flow.status = Status::Rejected;
                     flow.deadline_ms = None;
                 } else {
@@ -702,6 +930,9 @@ impl<D: Domain> Domain for Flows<D> {
                 let flow = live_flow(&mut state.flows, &instance, ctx.now_ms)?;
                 let template = template_for(&state.flow_templates, flow)?.clone();
                 let stage = template.stages.get(flow.current).ok_or(Error::Denied)?;
+                if matches!(stage.approver, Approver::ClubPresidents { .. }) {
+                    return Err(Error::Denied);
+                }
                 let record = flow.records.get_mut(flow.current).ok_or(Error::Denied)?;
                 let (from_id, from) = ctx.member()?;
                 let target = ctx.core.members.get(&to).ok_or(Error::NotFound)?;
@@ -738,8 +969,12 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     run.error = Some("stage timed out".into());
                 }
+                ai::refund::<D>(&mut state.inner, record)?;
                 match stage.on_timeout {
                     TimeoutPolicy::Reject => {
+                        for future in flow.records.iter_mut().skip(flow.current + 1) {
+                            ai::refund::<D>(&mut state.inner, future)?;
+                        }
                         flow.status = Status::Rejected;
                         flow.deadline_ms = None;
                     }
@@ -757,7 +992,9 @@ impl<D: Domain> Domain for Flows<D> {
                 let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
                 if !matches!(flow.status, Status::Active | Status::Approved)
                     || !(ctx.core.admins.contains(ctx.actor)
-                        || ctx.member().is_ok_and(|(id, _)| id == flow.proposer))
+                        || ctx
+                            .member()
+                            .is_ok_and(|(id, _)| id == flow.proposer || id == flow.payer.member))
                 {
                     return Err(Error::Denied);
                 }
@@ -770,14 +1007,24 @@ impl<D: Domain> Domain for Flows<D> {
                 {
                     run.error = Some("flow cancelled".into());
                 }
+                for record in &mut flow.records {
+                    ai::refund::<D>(&mut state.inner, record)?;
+                }
                 flow.status = Status::Cancelled;
                 flow.deadline_ms = None;
             }
             FlowAction::Execute { instance } => {
+                let existing = state.flows.get(&instance).ok_or(Error::NotFound)?;
+                let clubs = D::approval_clubs(&state.inner, &existing.payload)?;
+                let worker = D::workflow_worker(&state.inner, &existing.payload);
                 let flow = state.flows.get_mut(&instance).ok_or(Error::NotFound)?;
                 if flow.status != Status::Approved
                     || !(ctx.core.admins.contains(ctx.actor)
-                        || ctx.member().is_ok_and(|(id, _)| id == flow.proposer))
+                        || ctx.member().is_ok_and(|(id, m)| {
+                            id == flow.proposer
+                                || worker.as_deref() == Some(id)
+                                || (m.roles.contains("president") && clubs.contains(&m.club))
+                        }))
                     || !member(ctx.core, &flow.proposer_device)
                         .is_some_and(|(id, _)| id == flow.proposer)
                 {
@@ -818,6 +1065,7 @@ impl<D: Domain> Domain for Flows<D> {
                 flow.status = Status::Executed;
             }
         }
+        ai::validate_balances::<D>(state)?;
         Ok(())
     }
 }
@@ -894,6 +1142,8 @@ struct StartDefinition<D: Domain> {
     input: Option<protocol::Cid>,
     definition: Template,
     reference: Option<(String, u64)>,
+    automatic: bool,
+    max_points: Option<u64>,
 }
 fn begin<D: Domain>(
     state: &mut FlowsState<D>,
@@ -904,13 +1154,25 @@ fn begin<D: Domain>(
         id,
         payload,
         input,
-        definition,
+        mut definition,
         reference,
+        automatic,
+        max_points,
     } = spec;
     let (proposer, _) = ctx.member()?;
     text(&id)?;
     if state.flows.contains_key(&id) || state.flows.len() >= MAX_RECORDS {
         return Err(Error::Capacity);
+    }
+    let clubs = D::approval_clubs(&state.inner, &payload)?;
+    let presidential = !clubs.is_empty();
+    if presidential {
+        definition.stages.push(Stage {
+            name: "Club president signatures".into(),
+            approver: Approver::ClubPresidents { clubs },
+            timeout_ms: None,
+            on_timeout: TimeoutPolicy::Reject,
+        });
     }
     let version = &definition;
     validate_template(version, ctx.core)?;
@@ -955,18 +1217,49 @@ fn begin<D: Domain>(
         }
     }
     let first = version.stages.first().ok_or(Error::Denied)?;
+    let (payer, allowance) = if automatic {
+        let (account, allowance) = D::workflow_payer(&state.inner, &payload)?;
+        if !ctx
+            .core
+            .members
+            .get(&account.member)
+            .is_some_and(|m| m.club == account.club)
+        {
+            return Err(Error::Denied);
+        }
+        (account, Some(allowance))
+    } else {
+        (
+            protocol::PointAccount {
+                club: ctx.member()?.1.club.clone(),
+                member: proposer.into(),
+            },
+            None,
+        )
+    };
+    let records = ai::reserve_records::<D>(
+        state,
+        ctx,
+        version,
+        payer.clone(),
+        allowance.clone(),
+        max_points,
+    )?;
     state.flows.insert(
         id,
         Instance {
-            workflow: reference.is_none().then(|| definition.clone()),
+            workflow: (reference.is_none() || presidential).then(|| definition.clone()),
             template: reference.as_ref().map_or_else(String::new, |r| r.0.clone()),
             template_epoch: reference.as_ref().map_or(0, |r| r.1),
             payload,
             input,
             proposer: proposer.into(),
             proposer_device: ctx.actor.into(),
+            started_ms: ctx.now_ms,
+            payer,
+            allowance,
             current: 0,
-            records: vec![StageRecord::default(); version.stages.len()],
+            records,
             status: Status::Active,
             deadline_ms: deadline(first, ctx.now_ms)?,
         },

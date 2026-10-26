@@ -61,7 +61,7 @@ impl Default for NodeConfig {
             listen: vec![
                 Multiaddr::empty()
                     .with(libp2p::multiaddr::Protocol::Ip4(
-                        std::net::Ipv4Addr::LOCALHOST,
+                        std::net::Ipv4Addr::UNSPECIFIED,
                     ))
                     .with(libp2p::multiaddr::Protocol::Udp(0))
                     .with(libp2p::multiaddr::Protocol::QuicV1),
@@ -79,6 +79,8 @@ impl Default for NodeConfig {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    // Reject excess connections before protocol handlers record them.
+    limits: libp2p::connection_limits::Behaviour,
     kad: kad::Behaviour<kad::store::MemoryStore>,
     mdns: Toggle<mdns::tokio::Behaviour>,
     autonat: autonat::Behaviour,
@@ -88,7 +90,6 @@ struct Behaviour {
     relay_client: relay::client::Behaviour,
     relay_server: Toggle<relay::Behaviour>,
     dcutr: Toggle<dcutr::Behaviour>,
-    limits: libp2p::connection_limits::Behaviour,
 }
 
 type Catalog = Arc<RwLock<HashMap<ServiceId, Service>>>;
@@ -100,7 +101,10 @@ enum Command {
     Provide(ServiceId, oneshot::Sender<Result<()>>),
     Withdraw(ServiceId),
     Discover(kad::RecordKey, oneshot::Sender<Result<Vec<PeerId>>>),
-    Shutdown(oneshot::Sender<()>),
+    Peers(oneshot::Sender<Vec<PeerId>>),
+    PeerAddresses(PeerId, oneshot::Sender<Vec<Multiaddr>>),
+    DialPeer(PeerId, oneshot::Sender<Result<()>>),
+    Shutdown(oneshot::Sender<Result<()>>),
 }
 
 /// An authorized byte stream. The permit keeps admission bounded until dropped.
@@ -355,6 +359,40 @@ impl Node {
             .map_err(|_| Error::Stopped)?
     }
 
+    /// LAN peers announced over mDNS. Hints only; authorization is checked on use.
+    pub async fn peers(&self) -> Result<Vec<PeerId>> {
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .send(Command::Peers(tx))
+            .await
+            .map_err(|_| Error::Stopped)?;
+        rx.await.map_err(|_| Error::Stopped)
+    }
+
+    /// Every address the peer announced on the local network, reachable-looking
+    /// candidates first. Hints only; authorization is checked on use.
+    pub async fn peer_addresses(&self, peer: PeerId) -> Result<Vec<Multiaddr>> {
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .send(Command::PeerAddresses(peer, tx))
+            .await
+            .map_err(|_| Error::Stopped)?;
+        rx.await.map_err(|_| Error::Stopped)
+    }
+
+    /// Dial a peer announced by discovery, reusing the addresses mDNS or identify supplied.
+    pub async fn dial_peer(&self, peer: PeerId) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .send(Command::DialPeer(peer, tx))
+            .await
+            .map_err(|_| Error::Stopped)?;
+        timeout(REQUEST_TIMEOUT, rx)
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Stopped)?
+    }
+
     /// Discover protocol providers as untrusted hints, then query each host directory.
     pub async fn discover_protocol(&self, protocol: &str) -> Result<Vec<PeerId>> {
         if protocol::validate_identifier(protocol).is_err() || !protocol.is_ascii() {
@@ -476,13 +514,15 @@ impl Node {
         .map_err(|_| Error::Timeout)?
     }
 
-    pub async fn shutdown(self) -> Result<()> {
+    pub async fn shutdown(mut self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.commands
             .send(Command::Shutdown(tx))
             .await
             .map_err(|_| Error::Stopped)?;
-        rx.await.map_err(|_| Error::Stopped)
+        let result = rx.await.map_err(|_| Error::Stopped)?;
+        (&mut self.task).await.map_err(network)?;
+        result
     }
 }
 
@@ -494,6 +534,14 @@ impl Drop for Node {
 
 fn network(error: impl std::fmt::Display) -> Error {
     Error::Network(error.to_string())
+}
+
+fn reachable_hint(address: &Multiaddr) -> bool {
+    let text = address.to_string();
+    !text.starts_with("/ip4/127.")
+        && !text.starts_with("/ip6/::1")
+        && !text.starts_with("/ip4/169.254.")
+        && !text.starts_with("/ip6/fe80")
 }
 
 fn qualified_address(address: Multiaddr, local: PeerId) -> Multiaddr {
@@ -527,6 +575,8 @@ async fn run(
     type DiscoveryQuery = (oneshot::Sender<Result<Vec<PeerId>>>, HashSet<PeerId>);
     let mut queries: HashMap<kad::QueryId, DiscoveryQuery> = HashMap::new();
     let mut advertised: HashMap<ServiceId, String> = HashMap::new();
+    let mut lan_peers: std::collections::BTreeMap<PeerId, Vec<Multiaddr>> =
+        std::collections::BTreeMap::new();
     let mut maintenance = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
@@ -584,12 +634,30 @@ async fn run(
                     let query=swarm.behaviour_mut().kad.get_providers(service);
                     queries.insert(query,(response,HashSet::new()));
                 }
+                Some(Command::Peers(response)) => { let _ = response.send(lan_peers.keys().copied().collect()); }
+                Some(Command::PeerAddresses(peer, response)) => { let mut all = lan_peers.get(&peer).cloned().unwrap_or_default(); all.sort_by_key(|a| !reachable_hint(a)); let _ = response.send(all); }
+                Some(Command::DialPeer(peer, response)) => {
+                    if swarm.is_connected(&peer) { let _ = response.send(Ok(())); continue; }
+                    match swarm.dial(libp2p::swarm::dial_opts::DialOpts::peer_id(peer).build()) {
+                        Ok(()) => { pending.entry(peer).or_default().push(response); }
+                        Err(error) => { let _ = response.send(Err(network(error))); }
+                    }
+                }
                 Some(Command::Listen(address, response)) => { let _ = response.send(swarm.listen_on(address).map(|_| ()).map_err(network)); }
                 Some(Command::External(address)) => { swarm.add_external_address(address); }
                 Some(Command::Shutdown(response)) => {
                     tasks.abort_all();
+                    let result = timeout(REQUEST_TIMEOUT, async {
+                        while tasks.join_next().await.is_some() {}
+                        while swarm.network_info().connection_counters().num_established() > 0 {
+                            let peers: Vec<_> = swarm.connected_peers().copied().collect();
+                            for peer in peers { let _ = swarm.disconnect_peer_id(peer); }
+                            if swarm.next().await.is_none() { return Err(Error::Stopped); }
+                        }
+                        Ok(())
+                    }).await.unwrap_or(Err(Error::Timeout));
                     drop(swarm);
-                    let _ = response.send(());
+                    let _ = response.send(result);
                     return;
                 }
                 None => return,
@@ -659,10 +727,10 @@ async fn run(
                     }
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers)))=>{
-                    for (peer,address) in peers.into_iter().take(64){swarm.behaviour_mut().kad.add_address(&peer,address.clone());swarm.add_peer_address(peer,address);}
+                    for (peer,address) in peers.into_iter().take(64){swarm.behaviour_mut().kad.add_address(&peer,address.clone());swarm.add_peer_address(peer,address.clone());lan_peers.entry(peer).or_default().push(address);}
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(peers)))=>{
-                    for (peer,address) in peers{swarm.behaviour_mut().kad.remove_address(&peer,&address);}
+                    for (peer,address) in peers{swarm.behaviour_mut().kad.remove_address(&peer,&address);if let Some(all)=lan_peers.get_mut(&peer){all.retain(|a|a!=&address);if all.is_empty(){lan_peers.remove(&peer);}}}
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed{id,result:kad::QueryResult::GetProviders(result),step,..}))=>{
                     if let Some((_,peers))=queries.get_mut(&id) && let Ok(kad::GetProvidersOk::FoundProviders{providers,..})=&result {

@@ -96,7 +96,9 @@ async fn business_genesis_discovery_round_trips_and_rejects_binding_mismatch() {
         let server = server.clone();
         let business = business.clone();
         let view = identities.log.view(Duration::from_secs(60)).unwrap();
-        async move { authority::journal::serve(&server, business, view).await }
+        async move {
+            authority::journal::serve(&server, business, view, client::journal::PROTOCOL).await
+        }
     });
     tokio::task::yield_now().await;
     let client = Node::start(Identity::generate(), NodeConfig::default())
@@ -109,6 +111,7 @@ async fn business_genesis_discovery_round_trips_and_rejects_binding_mismatch() {
         &address,
         &peer,
         &identities.binding.genesis,
+        client::journal::PROTOCOL,
     )
     .await
     .unwrap();
@@ -121,6 +124,7 @@ async fn business_genesis_discovery_round_trips_and_rejects_binding_mismatch() {
             &address,
             &peer,
             &"0".repeat(64),
+            client::journal::PROTOCOL,
         )
         .await
         .is_err()
@@ -149,7 +153,7 @@ async fn business_genesis_discovery_round_trips_and_rejects_binding_mismatch() {
         let server = server.clone();
         let bad = bad.clone();
         let view = identities.log.view(Duration::from_secs(60)).unwrap();
-        async move { authority::journal::serve(&server, bad, view).await }
+        async move { authority::journal::serve(&server, bad, view, client::journal::PROTOCOL).await }
     });
     tokio::task::yield_now().await;
     let address = format!("{}/p2p/{}", server.addresses()[0], server.peer_id());
@@ -159,6 +163,7 @@ async fn business_genesis_discovery_round_trips_and_rejects_binding_mismatch() {
             &address,
             &server.peer_id().to_string(),
             &identities.binding.genesis,
+            client::journal::PROTOCOL,
         )
         .await
         .is_err()

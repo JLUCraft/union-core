@@ -15,8 +15,13 @@ use tokio::{sync::Semaphore, task::JoinSet, time::timeout};
 pub struct Subscribe {
     pub after_revision: u64,
 }
-pub async fn subscribe(node: &Node, peer: PeerId, after_revision: u64) -> Result<crate::Stream> {
-    let mut stream = node.open_protocol(peer, PROTOCOL).await?;
+pub async fn subscribe(
+    node: &Node,
+    peer: PeerId,
+    after_revision: u64,
+    protocol: &'static str,
+) -> Result<crate::Stream> {
+    let mut stream = node.open_protocol(peer, protocol).await?;
     write_frame(
         &mut stream,
         &JsonFrame {
@@ -39,8 +44,9 @@ pub async fn next(stream: &mut crate::Stream) -> Result<Event> {
 pub async fn serve_authority<D: Domain>(
     node: Arc<Node>,
     authority: crate::authority::Authority<D>,
+    protocol: &'static str,
 ) -> Result<()> {
-    let mut incoming = node.accept_protocol(PROTOCOL)?;
+    let mut incoming = node.accept_protocol(protocol)?;
     let capacity = Arc::new(Semaphore::new(128));
     let mut tasks = JoinSet::new();
     loop {

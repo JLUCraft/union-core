@@ -1,14 +1,20 @@
 //! Signed block upload followed by a single compare-and-swap directory commit.
+use crate::application::Application;
 use crate::{Error, Identity, Node, PeerId, Result};
 use authority::journal;
 use protocol::{Cid, FileNode, IpldBlock};
-pub type Office = flows::Flows<events::EventsDomain>;
-pub type Snapshot = state::State<Office>;
+pub type Snapshot = state::State<Application>;
 pub async fn snapshot(node: &Node, peer: PeerId, genesis: &str) -> Result<Snapshot> {
-    journal::request::<Office>(node, peer, genesis, journal::Request::Snapshot)
-        .await?
-        .state
-        .ok_or(Error::Denied)
+    journal::request::<Application>(
+        node,
+        peer,
+        genesis,
+        journal::Request::Snapshot,
+        crate::journal::PROTOCOL,
+    )
+    .await?
+    .state
+    .ok_or(Error::Denied)
 }
 pub struct Upload<'a> {
     pub branch: &'a str,
@@ -101,13 +107,14 @@ async fn apply_with_identity(
     action: events::EventAction,
     trust: &crate::trust::TrustLog,
 ) -> Result<Snapshot> {
-    crate::trust::execute::<Office>(
+    crate::trust::execute::<Application>(
         node,
         peer,
         genesis,
         identity,
         trust,
         state::governance::Action::Domain(flows::FlowAction::Inner(action)),
+        crate::journal::PROTOCOL,
     )
     .await?
     .state
@@ -117,13 +124,13 @@ async fn apply_with_identity(
 pub async fn push(
     node: &Node,
     peer: PeerId,
-    request: &protocol::OfficePushRequest,
-) -> Result<protocol::OfficePushResponse> {
+    request: &protocol::ApplicationPushRequest,
+) -> Result<protocol::ApplicationPushResponse> {
     let service = node
         .list_services(peer)
         .await?
         .into_iter()
-        .find(|r| r.protocol == protocol::OFFICE_PUSH_PROTOCOL)
+        .find(|r| r.protocol == protocol::APPLICATION_PUSH_PROTOCOL)
         .ok_or(Error::NotFound)?
         .id
         .parse()
@@ -147,4 +154,13 @@ pub async fn push(
     })
     .await
     .map_err(|_| Error::Protocol("push registration timed out".into()))?
+}
+
+/// Read only the content-addressed store from a presented snapshot. UI number conversion in
+/// unrelated fields cannot alter a block's CID or prevent reading already verified file bytes.
+pub fn cached_file(snapshot: &serde_json::Value, cid: &str) -> Result<Vec<u8>> {
+    let files: events::files::FileStore =
+        serde_json::from_value(snapshot.get("files").cloned().ok_or(Error::Denied)?)
+            .map_err(Error::protocol)?;
+    files.read(&cid.parse()?)
 }

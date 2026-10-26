@@ -56,6 +56,50 @@ impl Fixture {
     }
 }
 #[test]
+fn manual_membership_issuance_needs_the_club_chair_and_device_possession() {
+    let mut f = Fixture::new();
+    let applicant = Identity::generate();
+    let action = TrustAction::ConfirmMember {
+        member: "manual-member".into(),
+        club: "club-0".into(),
+        device: Some(applicant.peer_id().to_string()),
+        evidence: "manual".into(),
+        verifier: None,
+    };
+    for keys in [
+        vec![&applicant],
+        vec![&f.roots[0]],
+        vec![&f.roots[1], &applicant],
+    ] {
+        let before = serde_json::to_value(&f.state).unwrap();
+        let record = f.record(action.clone(), &keys);
+        assert!(f.state.apply(&record).is_err());
+        assert_eq!(serde_json::to_value(&f.state).unwrap(), before);
+    }
+    let record = f.record(action, &[&f.roots[0], &applicant]);
+    f.state.apply(&record).unwrap();
+    assert!(f.state.is_member("manual-member", "club-0"));
+
+    // An existing identity can receive another club's membership without rebinding a device.
+    let action = TrustAction::ConfirmMember {
+        member: "manual-member".into(),
+        club: "club-1".into(),
+        device: None,
+        evidence: "manual".into(),
+        verifier: None,
+    };
+    let record = f.record(action.clone(), &[&applicant]);
+    assert!(f.state.apply(&record).is_err());
+    let record = f.record(action, &[&f.roots[1]]);
+    f.state.apply(&record).unwrap();
+    assert!(f.state.is_member("manual-member", "club-1"));
+    assert_eq!(
+        f.state.member_for_device(&applicant.peer_id().to_string()),
+        Some("manual-member")
+    );
+}
+
+#[test]
 fn stable_identity_separate_membership_permissions_and_chair_authority() {
     let mut f = Fixture::new();
     let old = Identity::generate();
@@ -148,18 +192,6 @@ fn stable_identity_separate_membership_permissions_and_chair_authority() {
     );
     f.state.apply(&r).unwrap();
     assert_eq!(f.state.chairs()["club-0"], "founder-0");
-    let chairs: BTreeMap<_, _> = [
-        ("club-0".into(), "member-a".into()),
-        ("club-1".into(), "founder-1".into()),
-        ("club-2".into(), "founder-2".into()),
-    ]
-    .into();
-    let action = TrustAction::ReplaceChairs { chairs, quorum: 2 };
-    let r = f.record(action.clone(), &[&f.roots[0], &new]);
-    assert!(f.state.apply(&r).is_err());
-    let r = f.record(action, &[&f.roots[0], &f.roots[1], &new]);
-    f.state.apply(&r).unwrap();
-    assert_eq!(f.state.chairs()["club-0"], "member-a");
 }
 #[test]
 fn signatures_bind_history_and_automatic_verifier_cannot_restore_revoked_membership() {
@@ -626,6 +658,243 @@ fn succession_votes_survive_interleaving_but_not_a_replaced_chair_epoch() {
     let r = f.record(vote("obsolete"), &[&f.roots[1]]);
     assert!(f.state.apply(&r).is_err());
 }
+
+#[test]
+fn succession_proposal_requires_a_sitting_chair_and_confirmed_members() {
+    let mut f = Fixture::new();
+    let successor = Identity::generate();
+    let outsider = Identity::generate();
+    f.member("successor", &successor);
+    f.member("outsider", &outsider);
+    let mut chairs = f.state.chairs().clone();
+    chairs.insert("club-0".into(), "successor".into());
+    let propose = |id: &str| TrustAction::ProposeSuccession {
+        id: id.into(),
+        chairs: chairs.clone(),
+        quorum: 2,
+    };
+    let r = f.record(propose("outsider"), &[&outsider]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a member who is not a chair cannot open a succession"
+    );
+    let r = f.record(propose("self"), &[&successor, &outsider]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "the incoming chair cannot open the succession alone"
+    );
+    let r = f.record(propose("election"), &[&f.roots[0]]);
+    f.state.apply(&r).unwrap();
+    let r = f.record(propose("election"), &[&f.roots[0]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a pending succession id cannot be reopened"
+    );
+}
+
+#[test]
+fn succession_proposal_rejects_bad_quorum_and_unknown_chairs() {
+    let mut f = Fixture::new();
+    let successor = Identity::generate();
+    f.member("successor", &successor);
+    let mut candidate = f.state.chairs().clone();
+    candidate.insert("club-0".into(), "successor".into());
+    let propose = |id: &str, chairs: BTreeMap<String, String>, quorum: usize| {
+        TrustAction::ProposeSuccession {
+            id: id.into(),
+            chairs,
+            quorum,
+        }
+    };
+    for (id, chairs, quorum) in [
+        ("weak-quorum", candidate.clone(), 1usize),
+        ("quorum-over-seats", candidate.clone(), 4),
+        ("no-seats", BTreeMap::new(), 1),
+    ] {
+        let r = f.record(propose(id, chairs, quorum), &[&f.roots[0]]);
+        assert!(f.state.apply(&r).is_err(), "{id}");
+    }
+    let mut ghost = candidate.clone();
+    ghost.insert("club-2".into(), "ghost".into());
+    let r = f.record(propose("ghost", ghost, 2), &[&f.roots[0]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a member without a confirmed identity cannot become a chair"
+    );
+    let mut invalid_club = candidate.clone();
+    invalid_club.insert(String::new(), "successor".into());
+    let r = f.record(propose("invalid-club", invalid_club, 3), &[&f.roots[0]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a club identifier must be well formed"
+    );
+}
+
+#[test]
+fn succession_approval_and_execution_require_chair_votes_and_acceptance() {
+    let mut f = Fixture::new();
+    let successor = Identity::generate();
+    let plain = Identity::generate();
+    f.member("successor", &successor);
+    f.member("plain", &plain);
+    let mut chairs = f.state.chairs().clone();
+    chairs.insert("club-0".into(), "successor".into());
+    let r = f.record(
+        TrustAction::ProposeSuccession {
+            id: "election".into(),
+            chairs,
+            quorum: 2,
+        },
+        &[&f.roots[0]],
+    );
+    f.state.apply(&r).unwrap();
+    let vote = || TrustAction::ApproveSuccession {
+        id: "election".into(),
+    };
+    let execute = || TrustAction::ExecuteSuccession {
+        id: "election".into(),
+    };
+    let r = f.record(vote(), &[&plain]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "only sitting chairs count as approvers"
+    );
+    let r = f.record(vote(), &[&f.roots[0]]);
+    f.state.apply(&r).unwrap();
+    let r = f.record(execute(), &[&f.roots[0]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "one approval is below the quorum"
+    );
+    let r = f.record(vote(), &[&f.roots[1]]);
+    f.state.apply(&r).unwrap();
+    let r = f.record(execute(), &[&f.roots[0]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "the incoming chair has not accepted the seat"
+    );
+    let r = f.record(vote(), &[&successor]);
+    f.state.apply(&r).unwrap();
+    let r = f.record(execute(), &[&f.roots[1]]);
+    f.state.apply(&r).unwrap();
+    assert_eq!(f.state.chairs()["club-0"], "successor");
+    assert!(f.state.is_member("founder-0", "club-0"));
+    let r = f.record(vote(), &[&f.roots[2]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a closed succession cannot collect votes"
+    );
+    let r = f.record(execute(), &[&f.roots[2]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a closed succession cannot execute twice"
+    );
+}
+
+#[test]
+fn succession_cancel_needs_the_chair_majority_and_a_cancelled_id_is_dead() {
+    let mut f = Fixture::new();
+    let successor = Identity::generate();
+    f.member("successor", &successor);
+    let mut chairs = f.state.chairs().clone();
+    chairs.insert("club-0".into(), "successor".into());
+    let r = f.record(
+        TrustAction::ProposeSuccession {
+            id: "election".into(),
+            chairs,
+            quorum: 2,
+        },
+        &[&f.roots[0]],
+    );
+    f.state.apply(&r).unwrap();
+    let cancel = || TrustAction::CancelSuccession {
+        id: "election".into(),
+    };
+    let r = f.record(cancel(), &[&f.roots[0]]);
+    assert!(
+        f.state.apply(&r).is_err(),
+        "one chair is not the chair majority"
+    );
+    let r = f.record(cancel(), &[&f.roots[0], &f.roots[1]]);
+    f.state.apply(&r).unwrap();
+    let r = f.record(
+        TrustAction::ApproveSuccession {
+            id: "election".into(),
+        },
+        &[&f.roots[0]],
+    );
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a cancelled succession cannot be approved"
+    );
+    let r = f.record(
+        TrustAction::ExecuteSuccession {
+            id: "election".into(),
+        },
+        &[&f.roots[0], &f.roots[1]],
+    );
+    assert!(
+        f.state.apply(&r).is_err(),
+        "a cancelled succession cannot execute"
+    );
+}
+
+#[test]
+fn genesis_rejects_an_empty_duplicate_or_unpinned_founder_roster() {
+    let first = Identity::generate();
+    let second = Identity::generate();
+    let founder = |member: &str, club: &str, key: &Identity| TrustFounder {
+        member: member.into(),
+        club: club.into(),
+        public_key: key.public_key().encode_protobuf(),
+    };
+    let pinned = |genesis: &TrustGenesis| TrustState::genesis_digest(genesis).unwrap();
+    let empty = TrustGenesis {
+        federation: "test-federation".into(),
+        quorum: 1,
+        founders: vec![],
+    };
+    assert!(TrustState::new(&empty, &pinned(&empty)).is_err());
+    let duplicate_club = TrustGenesis {
+        federation: "test-federation".into(),
+        quorum: 1,
+        founders: vec![
+            founder("first", "club-0", &first),
+            founder("second", "club-0", &second),
+        ],
+    };
+    assert!(TrustState::new(&duplicate_club, &pinned(&duplicate_club)).is_err());
+    let invalid_club = TrustGenesis {
+        federation: "test-federation".into(),
+        quorum: 1,
+        founders: vec![founder("first", "", &first)],
+    };
+    assert!(TrustState::new(&invalid_club, &pinned(&invalid_club)).is_err());
+    let weak_quorum = TrustGenesis {
+        federation: "test-federation".into(),
+        quorum: 1,
+        founders: vec![
+            founder("first", "club-0", &first),
+            founder("second", "club-1", &second),
+            founder("third", "club-2", &Identity::generate()),
+        ],
+    };
+    assert!(TrustState::new(&weak_quorum, &pinned(&weak_quorum)).is_err());
+    let valid = TrustGenesis {
+        federation: "test-federation".into(),
+        quorum: 2,
+        founders: vec![
+            founder("first", "club-0", &first),
+            founder("second", "club-1", &second),
+            founder("third", "club-2", &Identity::generate()),
+        ],
+    };
+    assert!(TrustState::new(&valid, &pinned(&valid)).is_ok());
+    assert!(
+        TrustState::new(&valid, &"0".repeat(64)).is_err(),
+        "the founder roster is only accepted with its pinned digest"
+    );
+}
 #[test]
 fn global_recovery_and_service_registration_require_independent_authority() {
     let mut f = Fixture::new();
@@ -740,7 +1009,9 @@ async fn replicated_business_replays_signatures_across_failover_and_revocation()
         )
         .await
         .unwrap();
-        tasks.push(tokio::spawn(cluster.clone().serve()));
+        tasks.push(tokio::spawn(
+            cluster.clone().serve(journal::journal::PROTOCOL),
+        ));
         clusters.push(cluster);
     }
     clusters[0].initialize().await.unwrap();
@@ -776,6 +1047,7 @@ async fn replicated_business_replays_signatures_across_failover_and_revocation()
             id: "unified".into(),
             digest: "b".repeat(64),
         },
+        journal::journal::PROTOCOL,
     )
     .await
     .unwrap();
@@ -810,6 +1082,7 @@ async fn replicated_business_replays_signatures_across_failover_and_revocation()
             id: "after-election".into(),
             digest: "c".repeat(64),
         },
+        journal::journal::PROTOCOL,
     )
     .await
     .unwrap();

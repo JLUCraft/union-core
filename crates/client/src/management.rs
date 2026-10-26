@@ -86,10 +86,6 @@ fn templates() -> Vec<TrustAction> {
         TrustAction::ApproveSuccession { id: empty() },
         TrustAction::ExecuteSuccession { id: empty() },
         TrustAction::CancelSuccession { id: empty() },
-        TrustAction::ReplaceChairs {
-            chairs: BTreeMap::new(),
-            quorum: 0,
-        },
     ]
 }
 fn template(action: &str) -> Result<Value> {
@@ -345,11 +341,7 @@ pub fn review_genesis(genesis: TrustGenesis) -> Result<Value> {
 }
 pub fn review_config(config: &Config) -> Result<Value> {
     TrustState::new(&config.genesis, &config.genesis_hash)?;
-    let peer: PeerId = config.peer.parse().map_err(Error::protocol)?;
-    let address: crate::Multiaddr = config.address.parse().map_err(Error::protocol)?;
-    if !matches!(address.iter().last(), Some(crate::AddressProtocol::P2p(id)) if id==peer) {
-        return Err(Error::Denied);
-    }
+    crate::endpoint(&config.address, &config.peer)?;
     // Never share another terminal's private filesystem/cache path.
     Ok(
         json!({"genesis":config.genesis,"genesis_hash":config.genesis_hash,"address":config.address,"peer":config.peer}),

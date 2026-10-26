@@ -1,11 +1,10 @@
 #[path = "../support/mod.rs"]
 mod support;
 use authority::journal::TrustedCommand;
+use authority::journal::{self, Command, Request, SignedCommand};
+use client::application::Action;
 use identity::Identity;
-use league::{
-    governance::Action,
-    journal::{self, Command, Journal, Request, SignedCommand},
-};
+type Journal = authority::journal::Journal<client::application::Application>;
 use node::{Node, NodeConfig};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -28,7 +27,9 @@ async fn governance_binds_signed_actor_to_authenticated_stream_and_rejects_repla
         let task = {
             let node = server.clone();
             let journal = journal.clone();
-            tokio::spawn(async move { journal::serve(&node, journal, view).await })
+            tokio::spawn(
+                async move { journal::serve(&node, journal, view, journal::PROTOCOL).await },
+            )
         };
         // Protocol registration runs on the spawned server task before dialing.
         tokio::task::yield_now().await;
@@ -37,11 +38,12 @@ async fn governance_binds_signed_actor_to_authenticated_stream_and_rejects_repla
         client.dial(server.addresses()[0].clone()).await?;
         stranger.dial(server.addresses()[0].clone()).await?;
         assert!(
-            journal::request(
+            journal::request::<client::application::Application>(
                 &stranger,
                 server.peer_id(),
                 &genesis_hash,
-                Request::Snapshot
+                Request::Snapshot,
+                journal::PROTOCOL
             )
             .await?
             .state
@@ -64,7 +66,7 @@ async fn governance_binds_signed_actor_to_authenticated_stream_and_rejects_repla
             },
         )?;
         let history = identities.log.history_since(None)?;
-        let wrong = journal::request(
+        let wrong = journal::request::<client::application::Application>(
             &client,
             server.peer_id(),
             &"0".repeat(64),
@@ -72,6 +74,7 @@ async fn governance_binds_signed_actor_to_authenticated_stream_and_rejects_repla
                 history: history.clone(),
                 command: command.clone(),
             },
+            journal::PROTOCOL,
         )
         .await?;
         assert!(wrong.error.is_some());
@@ -81,28 +84,30 @@ async fn governance_binds_signed_actor_to_authenticated_stream_and_rejects_repla
             "wrong deployment must not execute a command"
         );
         assert!(
-            journal::request(
+            journal::request::<client::application::Application>(
                 &stranger,
                 server.peer_id(),
                 &genesis_hash,
                 Request::Execute {
                     history: history.clone(),
                     command: command.clone()
-                }
+                },
+                journal::PROTOCOL
             )
             .await?
             .error
             .is_some()
         );
         assert_eq!(
-            journal::request(
+            journal::request::<client::application::Application>(
                 &client,
                 server.peer_id(),
                 &genesis_hash,
                 Request::Execute {
                     history: history.clone(),
                     command: command.clone()
-                }
+                },
+                journal::PROTOCOL
             )
             .await?
             .state
@@ -111,14 +116,15 @@ async fn governance_binds_signed_actor_to_authenticated_stream_and_rejects_repla
             1
         );
         assert!(
-            journal::request(
+            journal::request::<client::application::Application>(
                 &client,
                 server.peer_id(),
                 &genesis_hash,
                 Request::Execute {
                     history: history.clone(),
                     command
-                }
+                },
+                journal::PROTOCOL
             )
             .await?
             .error

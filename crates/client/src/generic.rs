@@ -1,7 +1,5 @@
 //! Shared Android JNI / Tauri command facade. Identity stays in native storage.
-use crate::{
-    Error, Identity, Multiaddr, Node, NodeConfig, PeerId, Result, governance::Action, journal,
-};
+use crate::{Error, Identity, Node, NodeConfig, Result, governance::Action, journal};
 use serde::{Deserialize, Serialize};
 use state::Domain;
 
@@ -19,18 +17,9 @@ pub struct Input<D: Domain> {
 pub async fn execute<D: Domain>(
     identity: Identity,
     input: Input<D>,
+    protocol: &'static str,
 ) -> Result<journal::Response<D>> {
-    let peer: PeerId = input
-        .peer
-        .parse()
-        .map_err(|_| Error::Protocol("invalid peer".into()))?;
-    let address: Multiaddr = input
-        .address
-        .parse()
-        .map_err(|_| Error::Protocol("invalid address".into()))?;
-    if !matches!(address.iter().last(),Some(crate::AddressProtocol::P2p(id)) if id == peer) {
-        return Err(Error::Denied);
-    }
+    let (address, peer) = crate::endpoint(&input.address, &input.peer)?;
     {
         let config = input.identity;
         let node = Node::start(identity.clone(), NodeConfig::default()).await?;
@@ -47,12 +36,19 @@ pub async fn execute<D: Domain>(
                         &identity,
                         &*log.lock().await,
                         action,
+                        protocol,
                     )
                     .await?
                 }
                 None => {
-                    journal::request(&node, peer, &input.genesis_hash, journal::Request::Snapshot)
-                        .await?
+                    journal::request(
+                        &node,
+                        peer,
+                        &input.genesis_hash,
+                        journal::Request::Snapshot,
+                        protocol,
+                    )
+                    .await?
                 }
             };
             if let Some(state) = &response.state {

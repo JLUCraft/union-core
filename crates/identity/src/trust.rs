@@ -435,25 +435,6 @@ impl TrustState {
                 }
                 proposal.closed = true;
             }
-            TrustAction::ReplaceChairs { chairs, quorum } => {
-                if !self.majority(signers) {
-                    return Err(Error::Denied);
-                }
-                validate_chairs(chairs, *quorum)?;
-                for (club, member) in chairs {
-                    identifier(club)?;
-                    if self.members.get(member).is_none_or(BTreeSet::is_empty) {
-                        return Err(Error::Denied);
-                    }
-                    if self.chairs.get(club) != Some(member) && !self.signed_member(member, signers)
-                    {
-                        return Err(Error::Denied);
-                    }
-                }
-                self.chairs = chairs.clone();
-                self.quorum = *quorum;
-                self.chair_epoch = self.chair_epoch.checked_add(1).ok_or(Error::Capacity)?;
-            }
             TrustAction::AuthorizeVerifier {
                 id,
                 club,

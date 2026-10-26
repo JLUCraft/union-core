@@ -1,5 +1,5 @@
 //! Shared CLI/JNI/Tauri identity client. The caller owns the Node and durable cache.
-use crate::{AddressProtocol, Identity, Multiaddr, Node, PeerId, Result};
+use crate::{Identity, Multiaddr, Node, PeerId, Result};
 use authority::journal::{self, Command, Request, SignedCommand, TrustedCommand};
 pub use authority::trust::{TrustLog, TrustView, request, synchronize};
 pub use identity::trust::{TrustState, sign};
@@ -15,8 +15,9 @@ pub async fn execute<D: Domain>(
     identity: &Identity,
     log: &TrustLog,
     action: Action<D>,
+    protocol: &'static str,
 ) -> Result<journal::Response<D>> {
-    let snapshot = journal::request::<D>(node, peer, genesis, Request::Snapshot).await?;
+    let snapshot = journal::request::<D>(node, peer, genesis, Request::Snapshot, protocol).await?;
     let state = snapshot.state.ok_or(crate::Error::Denied)?;
     let proof = snapshot.proof.ok_or(crate::Error::Denied)?;
     let command = SignedCommand::sign(
@@ -40,6 +41,7 @@ pub async fn execute<D: Domain>(
             command,
             history: log.history_since(proof.identity.as_ref())?,
         },
+        protocol,
     )
     .await?;
     if let Some(state) = &response.state {
@@ -63,11 +65,7 @@ impl Config {
         TrustLog::open(&self.log, &self.genesis, &self.genesis_hash)
     }
     pub async fn synchronize(&self, node: &Node, log: &tokio::sync::Mutex<TrustLog>) -> Result<()> {
-        let peer: PeerId = self.peer.parse().map_err(|_| crate::Error::Denied)?;
-        let address: crate::Multiaddr = self.address.parse().map_err(|_| crate::Error::Denied)?;
-        if !matches!(address.iter().last(),Some(crate::AddressProtocol::P2p(id)) if id==peer) {
-            return Err(crate::Error::Denied);
-        }
+        let (address, peer) = crate::endpoint(&self.address, &self.peer)?;
         node.dial(address).await?;
         synchronize(node, peer, log).await
     }
@@ -181,16 +179,7 @@ pub fn review(genesis: TrustGenesis, pinned: &str, records: &[TrustRecord]) -> R
 }
 
 fn parse_authority(address: &str, peer: &str) -> Result<(Multiaddr, PeerId)> {
-    let peer: PeerId = peer
-        .parse()
-        .map_err(|_| crate::Error::Protocol("invalid peer".into()))?;
-    let address: Multiaddr = address
-        .parse()
-        .map_err(|_| crate::Error::Protocol("invalid address".into()))?;
-    if !matches!(address.iter().last(),Some(AddressProtocol::P2p(id)) if id==peer) {
-        return Err(crate::Error::Denied);
-    }
-    Ok((address, peer))
+    crate::endpoint(address, peer)
 }
 
 fn unwrap_genesis<T>(error: Option<String>, genesis: Option<T>) -> Result<T> {
@@ -225,10 +214,11 @@ pub async fn fetch_business_genesis<D: Domain>(
     address: &str,
     peer: &str,
     identity_pin: &str,
+    protocol: &'static str,
 ) -> Result<(state::State<D>, String)> {
     let (address, peer) = parse_authority(address, peer)?;
     node.dial(address).await?;
-    let response = journal::discover::<D>(node, peer).await?;
+    let response = journal::discover::<D>(node, peer, protocol).await?;
     let genesis = unwrap_genesis(response.error, response.genesis)?;
     let binding = &genesis.core.identity;
     if binding.genesis != identity_pin {

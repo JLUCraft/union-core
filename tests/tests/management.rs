@@ -23,7 +23,7 @@ fn genesis(key: &Identity) -> TrustGenesis {
 fn every_administrative_protocol_action_has_a_native_form_and_builds_without_json_authoring() {
     let peer = Identity::generate().peer_id().to_string();
     let forms = management::forms().unwrap();
-    assert_eq!(forms.len(), 15);
+    assert_eq!(forms.len(), 14);
     for form in forms {
         let mut fields = serde_json::Map::new();
         for field in form.fields {
@@ -81,14 +81,6 @@ fn forms_reject_undeclared_fields_bad_keys_and_invalid_quorum() {
             json!({"service":"s","audience":"invalid","club":"c"}),
         ),
         (
-            "replace_chairs",
-            json!({"chairs":{"a":"a","b":"b"},"quorum":1}),
-        ),
-        (
-            "replace_chairs",
-            json!({"chairs":{"a":"same","b":"same"},"quorum":2}),
-        ),
-        (
             "authorize_verifier",
             json!({"id":"v","club":"c","device":Identity::generate().peer_id().to_string(),"evidence":["manual"]}),
         ),
@@ -98,6 +90,42 @@ fn forms_reject_undeclared_fields_bad_keys_and_invalid_quorum() {
             "{action}"
         );
     }
+}
+#[test]
+fn retired_bulk_chair_replacement_is_not_offered_on_any_layer() {
+    // The founder roster is server-source data; the only runtime chair transfer is the
+    // multi-signature succession record, so the retired bulk replacement must be absent from the
+    // client catalog and rejected when parsed.
+    let actions: Vec<String> = management::forms()
+        .unwrap()
+        .into_iter()
+        .map(|form| form.action)
+        .collect();
+    assert!(
+        !actions.iter().any(|action| action == "replace_chairs"),
+        "{actions:?}"
+    );
+    assert!(actions.iter().any(|action| action == "propose_succession"));
+    assert!(actions.iter().any(|action| action == "bind_device"));
+    assert!(actions.iter().any(|action| action == "revoke_device"));
+    assert!(
+        management::build_action(
+            "replace_chairs",
+            json!({"chairs": {"club-0": "founder-0"}, "quorum": 1})
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<TrustAction>(json!({
+            "type": "replace_chairs",
+            "chairs": {"club-0": "founder-0"},
+            "quorum": 1
+        }))
+        .is_err()
+    );
 }
 #[test]
 fn founder_exports_require_matching_public_identities_and_real_majority() {

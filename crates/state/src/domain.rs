@@ -29,6 +29,52 @@ pub trait Domain:
         + DeserializeOwned
         + Send
         + Sync;
+    fn point_balance(
+        _state: &Self::State,
+        _account: &crate::protocol::PointAccount,
+    ) -> Result<u64> {
+        Err(Error::Denied)
+    }
+    fn debit_points(
+        _state: &mut Self::State,
+        _account: &crate::protocol::PointAccount,
+        _amount: u64,
+    ) -> Result<()> {
+        Err(Error::Denied)
+    }
+    fn credit_points(
+        _state: &mut Self::State,
+        _account: &crate::protocol::PointAccount,
+        _amount: u64,
+    ) -> Result<()> {
+        Err(Error::Denied)
+    }
+    /// Automatic tasks require a payer's signed, scoped budget authorization.
+    fn workflow_payer(
+        _state: &Self::State,
+        _action: &Self::Action,
+    ) -> Result<(crate::protocol::PointAccount, crate::protocol::AiAllowance)> {
+        Err(Error::Denied)
+    }
+    fn debit_ai_allowance(
+        _state: &mut Self::State,
+        _account: &crate::protocol::PointAccount,
+        _allowance: &crate::protocol::AiAllowance,
+        _amount: u64,
+    ) -> Result<()> {
+        Err(Error::Denied)
+    }
+    fn refund_ai_allowance(
+        _state: &mut Self::State,
+        _account: &crate::protocol::PointAccount,
+        _allowance: &crate::protocol::AiAllowance,
+        _amount: u64,
+    ) -> Result<()> {
+        Err(Error::Denied)
+    }
+    fn ai_document_action(_id: &str, _member: &str, _worker: &str) -> Result<Self::Action> {
+        Err(Error::Denied)
+    }
     /// Resolve an immutable domain artifact; never performs I/O during replay.
     fn artifact(_state: &Self::State, _cid: &str) -> Result<Vec<u8>> {
         Err(Error::NotFound)
@@ -38,11 +84,18 @@ pub trait Domain:
     fn review_artifact(_state: &Self::State, _action: &Self::Action) -> Result<String> {
         Err(Error::Denied)
     }
+    fn workflow_input(_state: &Self::State, _action: &Self::Action) -> Result<Vec<u8>> {
+        Err(Error::Denied)
+    }
     fn workflow_worker(_state: &Self::State, _action: &Self::Action) -> Option<String> {
         None
     }
     fn requires_ai_review(_state: &Self::State, _action: &Self::Action) -> bool {
         false
+    }
+    /// Clubs whose presidents must sign the action before execution.
+    fn approval_clubs(_state: &Self::State, _action: &Self::Action) -> Result<BTreeSet<String>> {
+        Ok(BTreeSet::new())
     }
     fn transition_with_artifact(
         state: &mut Self::State,

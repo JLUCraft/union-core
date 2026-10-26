@@ -1,8 +1,9 @@
 #[path = "../support/mod.rs"]
 mod support;
 use authority::events;
+use client::application::Action;
 use identity::Identity;
-use league::{governance::Action, journal::Journal};
+type Journal = authority::journal::Journal<client::application::Application>;
 use node::{Node, NodeConfig};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -28,9 +29,10 @@ async fn events_invalidate_snapshots_and_reject_outsiders() -> Result<(), Box<dy
             log: log.clone(),
             view,
         },
+        events::PROTOCOL,
     ));
     tokio::task::yield_now().await;
-    let mut stream = events::subscribe(&client, host.peer_id(), 0).await?;
+    let mut stream = events::subscribe(&client, host.peer_id(), 0, events::PROTOCOL).await?;
     let first = events::next(&mut stream).await?;
     assert_eq!(first.revision, 0);
     assert!(first.resync);
@@ -66,7 +68,7 @@ async fn events_invalidate_snapshots_and_reject_outsiders() -> Result<(), Box<dy
     .await??;
     let outsider = Node::start(Identity::generate(), NodeConfig::default()).await?;
     outsider.dial(host.addresses()[0].clone()).await?;
-    let mut denied = events::subscribe(&outsider, host.peer_id(), 0).await?;
+    let mut denied = events::subscribe(&outsider, host.peer_id(), 0, events::PROTOCOL).await?;
     assert!(
         tokio::time::timeout(Duration::from_secs(2), events::next(&mut denied))
             .await?

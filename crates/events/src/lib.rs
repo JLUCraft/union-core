@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //! Deterministic event planning and replicated IPLD file history.
 pub mod files;
+pub mod points;
 pub mod workflows;
 use protocol::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,9 @@ pub struct EventsDomain;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EventsState {
     #[serde(default)]
-    pub office: workflows::OfficeState,
+    pub organization: workflows::OrganizationState,
+    #[serde(flatten)]
+    pub competitions: league::LeagueState,
     #[serde(default, skip_serializing_if = "files::FileStore::is_empty")]
     pub files: files::FileStore,
     #[serde(default)]
@@ -24,6 +27,17 @@ pub struct EventsState {
     pub signups: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
     pub checkins: BTreeMap<String, BTreeSet<String>>,
+}
+impl std::ops::Deref for EventsState {
+    type Target = league::LeagueState;
+    fn deref(&self) -> &Self::Target {
+        &self.competitions
+    }
+}
+impl std::ops::DerefMut for EventsState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.competitions
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Window {
@@ -90,6 +104,13 @@ pub enum EventAction {
     Publish { id: String },
     #[serde(rename = "events.amend")]
     Amend { id: String, brief_hash: String },
+    #[serde(rename = "events.revise")]
+    Revise {
+        id: String,
+        title: String,
+        brief_hash: String,
+        window: Window,
+    },
     #[serde(rename = "events.finish")]
     Finish { id: String },
     #[serde(rename = "events.cancel_event")]
@@ -112,7 +133,9 @@ pub enum EventAction {
     #[serde(rename = "events.cancel")]
     CancelSignup { id: String },
     #[serde(untagged)]
-    Office(workflows::OfficeAction),
+    Organization(workflows::OrganizationAction),
+    #[serde(untagged)]
+    Competition(league::LeagueAction),
 }
 fn text(s: &str, max: usize) -> Result<()> {
     if s.trim().is_empty() || s.len() > max || s.chars().any(char::is_control) {
@@ -121,11 +144,17 @@ fn text(s: &str, max: usize) -> Result<()> {
         Ok(())
     }
 }
-fn manage(event: &Event, ctx: &Context<'_>) -> bool {
+fn club_manager(ctx: &Context<'_>, club: &str) -> bool {
     ctx.core.admins.contains(ctx.actor)
-        || ctx.member().is_ok_and(|(id, m)| {
-            id == event.creator || (m.club == event.organizer && m.roles.contains("president"))
+        || ctx.member().is_ok_and(|(_, m)| {
+            m.club == club
+                && ["president", "admin", "manager"]
+                    .iter()
+                    .any(|role| m.roles.contains(*role))
         })
+}
+fn manage(event: &Event, ctx: &Context<'_>) -> bool {
+    club_manager(ctx, &event.organizer)
 }
 fn active(event: &Event) -> Result<()> {
     if matches!(event.phase, Phase::Done | Phase::Cancelled) {
@@ -135,6 +164,76 @@ fn active(event: &Event) -> Result<()> {
     }
 }
 impl Domain for EventsDomain {
+    fn point_balance(state: &Self::State, account: &protocol::PointAccount) -> Result<u64> {
+        Ok(points::balance(state, account))
+    }
+    fn debit_points(
+        state: &mut Self::State,
+        account: &protocol::PointAccount,
+        amount: u64,
+    ) -> Result<()> {
+        points::debit(state, account, amount)
+    }
+    fn credit_points(
+        state: &mut Self::State,
+        account: &protocol::PointAccount,
+        amount: u64,
+    ) -> Result<()> {
+        points::credit(state, account, amount)
+    }
+    fn workflow_payer(
+        state: &Self::State,
+        action: &Self::Action,
+    ) -> Result<(protocol::PointAccount, protocol::AiAllowance)> {
+        points::workflow_payer(state, action)
+    }
+    fn debit_ai_allowance(
+        state: &mut Self::State,
+        account: &protocol::PointAccount,
+        allowance: &protocol::AiAllowance,
+        amount: u64,
+    ) -> Result<()> {
+        points::debit_allowance(state, account, allowance, amount)
+    }
+    fn refund_ai_allowance(
+        state: &mut Self::State,
+        account: &protocol::PointAccount,
+        allowance: &protocol::AiAllowance,
+        amount: u64,
+    ) -> Result<()> {
+        points::refund_allowance(state, account, allowance, amount)
+    }
+    fn ai_document_action(id: &str, member: &str, worker: &str) -> Result<Self::Action> {
+        Ok(EventAction::Organization(
+            workflows::OrganizationAction::AiDocument {
+                id: id.into(),
+                member: member.into(),
+                worker: worker.into(),
+            },
+        ))
+    }
+    fn approval_clubs(state: &Self::State, action: &Self::Action) -> Result<BTreeSet<String>> {
+        let EventAction::Approve {
+            id,
+            epoch,
+            co_organizers,
+        } = action
+        else {
+            return Ok(BTreeSet::new());
+        };
+        let event = state.events.get(id).ok_or(Error::NotFound)?;
+        if event.phase != Phase::Review || event.epoch != *epoch {
+            return Err(Error::Denied);
+        }
+        let mut clubs = co_organizers.clone();
+        clubs.insert(event.organizer.clone());
+        if let Some(plan) = state.organization.plans.get(id)
+            && plan.schools.keys().cloned().collect::<BTreeSet<_>>() != clubs
+        {
+            return Err(Error::Denied);
+        }
+        Ok(clubs)
+    }
     fn artifact(state: &Self::State, cid: &str) -> Result<Vec<u8>> {
         state.files.read(&cid.parse()?)
     }
@@ -146,7 +245,7 @@ impl Domain for EventsDomain {
         if event.epoch != *epoch || event.phase != Phase::Review {
             return Err(Error::Denied);
         }
-        let cid: protocol::Cid = if let Some(plan) = state.office.plans.get(id) {
+        let cid: protocol::Cid = if let Some(plan) = state.organization.plans.get(id) {
             plan.review_input.clone().ok_or(Error::Denied)?
         } else {
             event.brief_hash.parse()?
@@ -154,20 +253,66 @@ impl Domain for EventsDomain {
         state.files.read(&cid)?;
         Ok(cid.to_string())
     }
-    fn workflow_worker(state: &Self::State, action: &Self::Action) -> Option<String> {
+    fn workflow_input(state: &Self::State, action: &Self::Action) -> Result<Vec<u8>> {
         match action {
-            EventAction::Approve { id, .. } if state.office.plans.contains_key(id) => {}
-            EventAction::Office(
-                workflows::OfficeAction::Polish { .. }
-                | workflows::OfficeAction::Summary { .. }
-                | workflows::OfficeAction::ReportGenerated { .. },
-            ) => {}
+            EventAction::Approve { .. } => {
+                Self::artifact(state, &Self::review_artifact(state, action)?)
+            }
+            EventAction::Organization(action) => workflows::evidence(state, action),
+            _ => Err(Error::Denied),
+        }
+    }
+    fn workflow_worker(state: &Self::State, action: &Self::Action) -> Option<String> {
+        if let EventAction::Organization(workflows::OrganizationAction::AiDocument {
+            worker, ..
+        }) = action
+        {
+            return Some(worker.clone());
+        }
+        match action {
+            EventAction::Approve { id, epoch, .. }
+                if state.organization.plans.contains_key(id)
+                    && state
+                        .events
+                        .get(id)
+                        .is_some_and(|e| e.phase == Phase::Review && e.epoch == *epoch) => {}
+            EventAction::Organization(workflows::OrganizationAction::Polish { event, epoch })
+                if state
+                    .events
+                    .get(event)
+                    .is_some_and(|e| e.phase == Phase::Draft && e.epoch == *epoch)
+                    && state
+                        .organization
+                        .plans
+                        .get(event)
+                        .is_some_and(|p| p.final_epoch == Some(*epoch) && p.polished.is_none()) => {
+            }
+            EventAction::Organization(workflows::OrganizationAction::Summary { event, epoch })
+                if state
+                    .events
+                    .get(event)
+                    .is_some_and(|e| e.phase == Phase::Done && e.epoch == *epoch)
+                    && state
+                        .organization
+                        .plans
+                        .get(event)
+                        .is_some_and(|p| p.settled && p.summary.is_none()) => {}
+            EventAction::Organization(workflows::OrganizationAction::ReportGenerated {
+                id,
+                version,
+            }) if state.organization.reports.get(id).is_some_and(|r| {
+                r.status == workflows::ReportStatus::Generating && r.version == *version
+            }) => {}
             _ => return None,
         }
-        state.office.automation.as_ref().map(|a| a.worker.clone())
+        state
+            .organization
+            .automation
+            .as_ref()
+            .map(|a| a.worker.clone())
     }
     fn requires_ai_review(state: &Self::State, action: &Self::Action) -> bool {
-        matches!(action,EventAction::Approve{id,..} if state.office.plans.contains_key(id))
+        matches!(action,EventAction::Approve{id,..} if state.organization.plans.contains_key(id))
     }
     fn transition_with_artifact(
         state: &mut Self::State,
@@ -176,10 +321,11 @@ impl Domain for EventsDomain {
         artifact: Option<String>,
     ) -> Result<()> {
         match action {
-            EventAction::Office(
-                action @ (workflows::OfficeAction::Polish { .. }
-                | workflows::OfficeAction::Summary { .. }
-                | workflows::OfficeAction::ReportGenerated { .. }),
+            EventAction::Organization(
+                action @ (workflows::OrganizationAction::Polish { .. }
+                | workflows::OrganizationAction::Summary { .. }
+                | workflows::OrganizationAction::ReportGenerated { .. }
+                | workflows::OrganizationAction::AiDocument { .. }),
             ) => workflows::generated(state, ctx, action, artifact.ok_or(Error::Denied)?.parse()?),
             action => Self::transition(state, ctx, action),
         }
@@ -188,7 +334,10 @@ impl Domain for EventsDomain {
     type Action = EventAction;
     fn transition(state: &mut Self::State, ctx: &Context<'_>, action: Self::Action) -> Result<()> {
         match action {
-            EventAction::Office(action) => workflows::transition(state, ctx, action)?,
+            EventAction::Organization(action) => workflows::transition(state, ctx, action)?,
+            EventAction::Competition(action) => {
+                league::LeagueDomain::transition(&mut state.competitions, ctx, action)?;
+            }
             EventAction::PutBlock { block } => {
                 ctx.member()?;
                 state.files.put(block)?;
@@ -215,6 +364,9 @@ impl Domain for EventsDomain {
                 window,
             } => {
                 let (creator, member) = ctx.member()?;
+                if !member.roles.contains("president") {
+                    return Err(Error::Denied);
+                }
                 text(&id, 128)?;
                 text(&title, 256)?;
                 if let Ok(cid) = brief_hash.parse::<protocol::Cid>() {
@@ -258,7 +410,7 @@ impl Domain for EventsDomain {
                     return Err(Error::Denied);
                 }
                 workflows::ready(state, &id)?;
-                if state.office.plans.get(&id).is_some_and(|p| {
+                if state.organization.plans.get(&id).is_some_and(|p| {
                     p.schools
                         .keys()
                         .filter(|c| **c != state.events[&id].organizer)
@@ -290,7 +442,7 @@ impl Domain for EventsDomain {
                     workflows::ready(state, &id)?;
                 }
                 if target == Phase::Done
-                    && state.office.plans.get(&id).is_some_and(|p| {
+                    && state.organization.plans.get(&id).is_some_and(|p| {
                         p.kind == workflows::Kind::Online
                             && p.selected
                                 .iter()
@@ -302,7 +454,7 @@ impl Domain for EventsDomain {
                 let event = state.events.get_mut(&id).ok_or(Error::NotFound)?;
                 active(event)?;
                 let worker = state
-                    .office
+                    .organization
                     .plans
                     .get(&id)
                     .is_some_and(|p| ctx.member().is_ok_and(|(m, _)| m == p.worker));
@@ -327,7 +479,26 @@ impl Domain for EventsDomain {
                 }
                 event.phase = target;
             }
-            EventAction::Amend { id, brief_hash } => {
+            action @ (EventAction::Amend { .. } | EventAction::Revise { .. }) => {
+                let (id, brief_hash, details) = match action {
+                    EventAction::Amend { id, brief_hash } => (id, brief_hash, None),
+                    EventAction::Revise {
+                        id,
+                        title,
+                        brief_hash,
+                        window,
+                    } => {
+                        text(&title, 256)?;
+                        if window.opens_ms >= window.closes_ms
+                            || window.closes_ms > window.starts_ms
+                            || window.closes_ms <= ctx.now_ms
+                        {
+                            return Err(Error::Denied);
+                        }
+                        (id, brief_hash, Some((title, window)))
+                    }
+                    _ => return Err(Error::Denied),
+                };
                 if let Ok(cid) = brief_hash.parse::<protocol::Cid>() {
                     state.files.read(&cid)?;
                 } else {
@@ -335,14 +506,23 @@ impl Domain for EventsDomain {
                 }
                 let event = state.events.get_mut(&id).ok_or(Error::NotFound)?;
                 active(event)?;
-                if !manage(event, ctx) || event.brief_hash == brief_hash {
+                if !manage(event, ctx)
+                    || (event.brief_hash == brief_hash
+                        && details.as_ref().is_none_or(|(title, window)| {
+                            *title == event.title && *window == event.window
+                        }))
+                {
                     return Err(Error::Denied);
                 }
                 event.brief_hash = brief_hash;
+                if let Some((title, window)) = details {
+                    event.title = title;
+                    event.window = window;
+                }
                 event.epoch = event.epoch.checked_add(1).ok_or(Error::Capacity)?;
                 // Material changes always require a fresh review, including already-published events.
                 event.phase = Phase::Draft;
-                if let Some(plan) = state.office.plans.get_mut(&id) {
+                if let Some(plan) = state.organization.plans.get_mut(&id) {
                     if plan.games.values().any(|g| g.reserved || g.started) {
                         return Err(Error::Denied);
                     }
@@ -418,13 +598,13 @@ impl Domain for EventsDomain {
                 {
                     return Err(Error::Denied);
                 }
-                if let Some(p) = state.office.plans.get(&id) {
+                if let Some(p) = state.organization.plans.get(&id) {
                     let school = p.schools.get(&affiliation.club).ok_or(Error::Denied)?;
                     if p.kind == workflows::Kind::Meeting && !school.participants.contains(member) {
                         return Err(Error::Denied);
                     }
                     state
-                        .office
+                        .organization
                         .enrollment
                         .entry(id.clone())
                         .or_default()
@@ -439,7 +619,7 @@ impl Domain for EventsDomain {
                 let (member, _) = ctx.member()?;
                 let event = state.events.get(&id).ok_or(Error::NotFound)?;
                 let checkin_window = state
-                    .office
+                    .organization
                     .plans
                     .get(&id)
                     .map(|p| (p.checkin_opens_ms, p.checkin_closes_ms));

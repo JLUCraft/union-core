@@ -18,11 +18,13 @@ pub enum Authority<D: Domain> {
     Replicated(Arc<crate::consensus::Cluster<D>>),
 }
 impl<D: Domain> Authority<D> {
-    pub async fn serve(self, node: Arc<crate::Node>) -> Result<()> {
+    pub async fn serve(self, node: Arc<crate::Node>, protocol: &'static str) -> Result<()> {
         match self {
-            Self::Local { journal, view, .. } => crate::journal::serve(&node, journal, view).await,
+            Self::Local { journal, view, .. } => {
+                crate::journal::serve(&node, journal, view, protocol).await
+            }
             #[cfg(feature = "consensus")]
-            Self::Replicated(cluster) => cluster.serve().await,
+            Self::Replicated(cluster) => cluster.serve(protocol).await,
         }
     }
     /// Only the elected replica runs external side effects; commits still require quorum.

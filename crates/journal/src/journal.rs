@@ -1,4 +1,4 @@
-//! Signed, revision-checked governance journal. Single authoritative writer per league
+//! Signed, revision-checked governance journal. One writer per organization
 //! deployment; this is deliberately not a Byzantine consensus implementation.
 use crate::{
     Error, Identity, Result,
@@ -198,6 +198,8 @@ pub struct Exchange {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SnapshotProof {
+    /// Observation time supplied by the authenticated authority, independent of ledger writes.
+    pub observed_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,6 +232,7 @@ impl<D: Domain> Response<D> {
             error: None,
             error_code: None,
             proof: Some(SnapshotProof {
+                observed_ms: now_ms()?,
                 head: None,
                 identity: None,
                 genesis_hash: genesis_hash.into(),

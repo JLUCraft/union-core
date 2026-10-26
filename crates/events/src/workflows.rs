@@ -1,5 +1,5 @@
 //! Office business workflows. All decisions are derived from signed state and server time.
-use crate::{EventsState, Phase, active, manage, text};
+use crate::{EventsState, Phase, active, club_manager, manage, text};
 use protocol::{Cid, Error, Result};
 use serde::{Deserialize, Serialize};
 use state::Context;
@@ -10,7 +10,7 @@ const MAX_TEXT: usize = 4096;
 pub const MAX_PUSH_CHECKPOINT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficeState {
+pub struct OrganizationState {
     pub automation: Option<Automation>,
     pub resources: BTreeMap<String, GameResource>,
     pub schools: BTreeMap<String, SchoolProfile>,
@@ -18,6 +18,12 @@ pub struct OfficeState {
     pub plans: BTreeMap<String, Plan>,
     pub reports: BTreeMap<String, Report>,
     pub points: BTreeMap<String, BTreeMap<String, u64>>,
+    pub activity_policy: Option<crate::points::ActivityPolicy>,
+    pub oracle_sources: BTreeMap<String, crate::points::OracleSource>,
+    pub activity_members: BTreeMap<String, crate::points::DayUsage>,
+    pub activity_receipts: BTreeMap<String, crate::points::ActivityReceipt>,
+    pub ai_allowances: BTreeMap<String, crate::points::BudgetAuthorization>,
+    pub ai_documents: BTreeMap<String, crate::points::AiDocument>,
     pub notices: BTreeMap<String, Notice>,
     pub publications: BTreeMap<String, PublicReport>,
     pub push_checkpoints: BTreeMap<String, PushCheckpoint>,
@@ -49,7 +55,6 @@ pub struct GameResource {
     pub title: String,
     pub address: String,
     pub peer: String,
-    pub genesis: String,
     pub host: String,
     pub scorer: String,
     pub seats: usize,
@@ -198,17 +203,42 @@ pub struct Notice {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
-pub enum OfficeAction {
-    #[serde(rename = "office.automation")]
+pub enum OrganizationAction {
+    #[serde(rename = "organization.activity_policy")]
+    ActivityPolicy {
+        policy: crate::points::ActivityPolicy,
+    },
+    #[serde(rename = "organization.oracle_source")]
+    OracleSource {
+        id: String,
+        source: crate::points::OracleSourcePolicy,
+    },
+    #[serde(rename = "organization.activity_attest")]
+    ActivityAttest {
+        source: String,
+        window_start_ms: u64,
+        window_end_ms: u64,
+        players: BTreeMap<String, crate::points::ActivityTotals>,
+        evidence: protocol::IpldBlock,
+    },
+    #[serde(rename = "organization.authorize_ai")]
+    AuthorizeAi { scope: String, budget: u64 },
+    #[serde(rename = "organization.ai_document")]
+    AiDocument {
+        id: String,
+        member: String,
+        worker: String,
+    },
+    #[serde(rename = "organization.automation")]
     Automation { config: Automation },
-    #[serde(rename = "office.resource")]
+    #[serde(rename = "organization.resource")]
     Resource { id: String, resource: GameResource },
-    #[serde(rename = "office.school_profile")]
+    #[serde(rename = "organization.school_profile")]
     SchoolProfile {
         club: String,
         profile: SchoolProfile,
     },
-    #[serde(rename = "office.plan")]
+    #[serde(rename = "organization.plan")]
     Plan {
         event: String,
         kind: Kind,
@@ -219,32 +249,32 @@ pub enum OfficeAction {
         ends_ms: u64,
         worker: String,
     },
-    #[serde(rename = "office.opinion")]
+    #[serde(rename = "organization.opinion")]
     Opinion {
         event: String,
         document: Cid,
         games: BTreeSet<String>,
     },
-    #[serde(rename = "office.consent")]
+    #[serde(rename = "organization.consent")]
     Consent {
         event: String,
         document: Cid,
         transcript: Option<Cid>,
     },
-    #[serde(rename = "office.rewards")]
+    #[serde(rename = "organization.rewards")]
     Rewards { event: String, rule: RewardRule },
-    #[serde(rename = "office.finalize")]
+    #[serde(rename = "organization.finalize")]
     Finalize {
         event: String,
         selected: BTreeSet<String>,
     },
-    #[serde(rename = "office.polish")]
+    #[serde(rename = "organization.polish")]
     Polish { event: String, epoch: u64 },
-    #[serde(rename = "office.summary")]
+    #[serde(rename = "organization.summary")]
     Summary { event: String, epoch: u64 },
-    #[serde(rename = "office.game_claim")]
+    #[serde(rename = "organization.game_claim")]
     GameClaim { event: String, game: String },
-    #[serde(rename = "office.game_receipt")]
+    #[serde(rename = "organization.game_receipt")]
     GameReceipt {
         event: String,
         game: String,
@@ -254,17 +284,17 @@ pub enum OfficeAction {
         evidence: Option<Cid>,
         error: Option<String>,
     },
-    #[serde(rename = "office.settle")]
+    #[serde(rename = "organization.settle")]
     Settle { event: String },
-    #[serde(rename = "office.deliver")]
+    #[serde(rename = "organization.deliver")]
     Deliver { event: String, member: String },
-    #[serde(rename = "office.receive")]
+    #[serde(rename = "organization.receive")]
     Receive { event: String },
-    #[serde(rename = "office.notify")]
+    #[serde(rename = "organization.notify")]
     Notify { task: String, due_ms: u64 },
-    #[serde(rename = "office.acknowledge")]
+    #[serde(rename = "organization.acknowledge")]
     Acknowledge { notice: String },
-    #[serde(rename = "office.report")]
+    #[serde(rename = "organization.report")]
     Report {
         id: String,
         kind: ReportKind,
@@ -274,30 +304,24 @@ pub enum OfficeAction {
         requirements: Cid,
         worker: String,
     },
-    #[serde(rename = "office.report_generated")]
+    #[serde(rename = "organization.report_generated")]
     ReportGenerated { id: String, version: u64 },
-    #[serde(rename = "office.report_revise")]
+    #[serde(rename = "organization.report_revise")]
     ReportRevise { id: String, document: Cid },
-    #[serde(rename = "office.report_publish")]
+    #[serde(rename = "organization.report_publish")]
     ReportPublish { id: String },
-    #[serde(rename = "office.push_checkpoint")]
+    #[serde(rename = "organization.push_checkpoint")]
     PushCheckpoint {
         group: String,
         expected: u64,
         ciphertext: String,
     },
 }
-fn club_manager(ctx: &Context<'_>, club: &str) -> bool {
-    ctx.core.admins.contains(ctx.actor)
-        || ctx
-            .member()
-            .is_ok_and(|(_, m)| m.club == club && m.roles.contains("president"))
-}
 fn file(state: &EventsState, cid: &Cid) -> Result<()> {
     state.files.read(cid).map(|_| ())
 }
 fn plan<'a>(state: &'a EventsState, id: &str) -> Result<&'a Plan> {
-    state.office.plans.get(id).ok_or(Error::NotFound)
+    state.organization.plans.get(id).ok_or(Error::NotFound)
 }
 fn editable(state: &EventsState, ctx: &Context<'_>, id: &str) -> Result<()> {
     let event = state.events.get(id).ok_or(Error::NotFound)?;
@@ -308,10 +332,15 @@ fn editable(state: &EventsState, ctx: &Context<'_>, id: &str) -> Result<()> {
 }
 pub fn ready(state: &EventsState, id: &str) -> Result<()> {
     let event = state.events.get(id).ok_or(Error::NotFound)?;
-    let Some(plan) = state.office.plans.get(id) else {
+    let Some(plan) = state.organization.plans.get(id) else {
         return Ok(());
     };
-    if plan.final_epoch != Some(event.epoch) || plan.polished.is_none() {
+    if plan.final_epoch != Some(event.epoch)
+        || plan.polished.is_none()
+        || plan.checkin_opens_ms >= plan.checkin_closes_ms
+        || plan.checkin_closes_ms > event.window.starts_ms
+        || event.window.starts_ms >= plan.ends_ms
+    {
         return Err(Error::Denied);
     }
     if plan.kind == Kind::Meeting {
@@ -340,9 +369,10 @@ fn consents_ready(state: &EventsState, id: &str) -> Result<()> {
     Ok(())
 }
 /// Snapshot of the exact evidence used by automatic workflow stages.
-pub fn evidence(state: &EventsState, action: &OfficeAction) -> Result<Vec<u8>> {
+pub fn evidence(state: &EventsState, action: &OrganizationAction) -> Result<Vec<u8>> {
     let value = match action {
-        OfficeAction::Polish { event, epoch } | OfficeAction::Summary { event, epoch } => {
+        OrganizationAction::Polish { event, epoch }
+        | OrganizationAction::Summary { event, epoch } => {
             let e = state.events.get(event).ok_or(Error::NotFound)?;
             if e.epoch != *epoch {
                 return Err(Error::Denied);
@@ -350,8 +380,8 @@ pub fn evidence(state: &EventsState, action: &OfficeAction) -> Result<Vec<u8>> {
             let p = plan(state, event)?;
             serde_json::json!({"event":e,"plan":p,"planning_document":document_evidence(state,&e.brief_hash.parse()?)?,"opinions":p.opinions.iter().map(|(club,o)|Ok((club,document_evidence(state,&o.document)?))).collect::<Result<BTreeMap<_,_>>>()?,"consents":p.consents.iter().map(|(subject,c)|Ok((subject,consent_evidence(state,c)?))).collect::<Result<BTreeMap<_,_>>>()?,"signups":state.signups.get(event),"checkins":state.checkins.get(event),"tasks":state.tasks.iter().filter(|(_,t)|&t.event==event).collect::<BTreeMap<_,_>>()})
         }
-        OfficeAction::ReportGenerated { id, version } => {
-            let r = state.office.reports.get(id).ok_or(Error::NotFound)?;
+        OrganizationAction::ReportGenerated { id, version } => {
+            let r = state.organization.reports.get(id).ok_or(Error::NotFound)?;
             if r.version != *version {
                 return Err(Error::Denied);
             }
@@ -371,7 +401,7 @@ fn store(state: &mut EventsState, bytes: &[u8]) -> Result<Cid> {
 pub fn generated(
     state: &mut EventsState,
     ctx: &Context<'_>,
-    action: OfficeAction,
+    action: OrganizationAction,
     output: Cid,
 ) -> Result<()> {
     if !ctx.approved {
@@ -379,9 +409,34 @@ pub fn generated(
     }
     file(state, &output)?;
     match action {
-        OfficeAction::Polish { event, epoch } => {
+        OrganizationAction::AiDocument { id, member, worker } => {
+            if !ctx.approved
+                || ctx.member()?.0 != member
+                || state.organization.ai_documents.contains_key(&id)
+            {
+                return Err(Error::Denied);
+            }
+            protocol::validate_identifier(&id)?;
+            if state.organization.ai_documents.len() >= crate::MAX_RECORDS {
+                return Err(Error::Capacity);
+            }
+            state.organization.ai_documents.insert(
+                id,
+                crate::points::AiDocument {
+                    member,
+                    worker,
+                    output,
+                    created_ms: ctx.now_ms,
+                },
+            );
+        }
+        OrganizationAction::Polish { event, epoch } => {
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             if e.epoch != epoch
                 || p.final_epoch != Some(epoch)
                 || p.polished.is_some()
@@ -391,9 +446,13 @@ pub fn generated(
             }
             p.polished = Some(output);
         }
-        OfficeAction::Summary { event, epoch } => {
+        OrganizationAction::Summary { event, epoch } => {
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             if e.epoch != epoch
                 || e.phase != Phase::Done
                 || !p.settled
@@ -404,8 +463,12 @@ pub fn generated(
             }
             p.summary = Some(output);
         }
-        OfficeAction::ReportGenerated { id, version } => {
-            let r = state.office.reports.get_mut(&id).ok_or(Error::NotFound)?;
+        OrganizationAction::ReportGenerated { id, version } => {
+            let r = state
+                .organization
+                .reports
+                .get_mut(&id)
+                .ok_or(Error::NotFound)?;
             if r.version != version
                 || r.status != ReportStatus::Generating
                 || ctx.member()?.0 != r.worker
@@ -419,11 +482,20 @@ pub fn generated(
     }
     Ok(())
 }
-pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeAction) -> Result<()> {
+pub fn transition(
+    state: &mut EventsState,
+    ctx: &Context<'_>,
+    action: OrganizationAction,
+) -> Result<()> {
     let (actor, member) = ctx.member()?;
     match action {
-        OfficeAction::Automation { config } => {
-            if !ctx.core.admins.contains(ctx.actor)
+        action @ (OrganizationAction::ActivityPolicy { .. }
+        | OrganizationAction::OracleSource { .. }
+        | OrganizationAction::ActivityAttest { .. }
+        | OrganizationAction::AuthorizeAi { .. }) => crate::points::transition(state, ctx, action)?,
+        OrganizationAction::AiDocument { .. } => return Err(Error::Denied),
+        OrganizationAction::Automation { config } => {
+            if !(ctx.core.admins.contains(ctx.actor) || member.roles.contains("president"))
                 || !ctx.core.members.contains_key(&config.worker)
             {
                 return Err(Error::Denied);
@@ -436,13 +508,13 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             {
                 return Err(Error::Denied);
             }
-            state.office.automation = Some(config);
+            state.organization.automation = Some(config);
         }
-        OfficeAction::Resource { id, resource } => {
-            if !ctx.core.admins.contains(ctx.actor)
-                || state.office.resources.len() >= MAX_ITEMS
+        OrganizationAction::Resource { id, resource } => {
+            if !(ctx.core.admins.contains(ctx.actor) || member.roles.contains("president"))
+                || state.organization.resources.len() >= MAX_ITEMS
                 || state
-                    .office
+                    .organization
                     .plans
                     .values()
                     .any(|p| p.final_epoch.is_some() && p.selected.contains(&id))
@@ -457,12 +529,10 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             if resource.seats == 0 || resource.seats > MAX_ITEMS {
                 return Err(Error::Denied);
             }
-            state.office.resources.insert(id, resource);
+            state.organization.resources.insert(id, resource);
         }
-        OfficeAction::SchoolProfile { club, profile } => {
-            if !ctx.core.admins.contains(ctx.actor)
-                || !ctx.core.members.values().any(|m| m.club == club)
-            {
+        OrganizationAction::SchoolProfile { club, profile } => {
+            if !club_manager(ctx, &club) || !ctx.core.members.values().any(|m| m.club == club) {
                 return Err(Error::Denied);
             }
             file(state, &profile.mua_requirements)?;
@@ -478,9 +548,9 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             {
                 return Err(Error::Denied);
             }
-            state.office.schools.insert(club, profile);
+            state.organization.schools.insert(club, profile);
         }
-        OfficeAction::Plan {
+        OrganizationAction::Plan {
             event,
             kind,
             schools,
@@ -493,14 +563,18 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             editable(state, ctx, &event)?;
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
             if state
-                .office
+                .organization
                 .automation
                 .as_ref()
                 .is_none_or(|a| a.worker != worker)
                 || candidates
                     .iter()
-                    .any(|id| !state.office.resources.contains_key(id))
-                || state.office.plans.contains_key(&event)
+                    .any(|id| !state.organization.resources.contains_key(id))
+                || state
+                    .organization
+                    .plans
+                    .get(&event)
+                    .is_some_and(|p| p.final_epoch.is_some())
                 || schools.is_empty()
                 || schools.len() > MAX_ITEMS
                 || !schools.contains_key(&e.organizer)
@@ -515,7 +589,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             for (club, s) in &schools {
                 if state
-                    .office
+                    .organization
                     .schools
                     .get(club)
                     .is_none_or(|p| p.kind != s.kind)
@@ -531,7 +605,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             for id in &candidates {
                 text(id, 128)?;
             }
-            state.office.plans.insert(
+            state.organization.plans.insert(
                 event,
                 Plan {
                     kind,
@@ -555,14 +629,18 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::Opinion {
+        OrganizationAction::Opinion {
             event,
             document,
             games,
         } => {
             file(state, &document)?;
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             if e.phase != Phase::Draft
                 || p.final_epoch.is_some()
                 || !p.schools.contains_key(&member.club)
@@ -581,7 +659,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::Consent {
+        OrganizationAction::Consent {
             event,
             document,
             transcript,
@@ -592,7 +670,11 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             file(state, &document)?;
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             let s = p.schools.get(&member.club).ok_or(Error::Denied)?;
             if e.phase != Phase::Draft || p.final_epoch.is_some() {
                 return Err(Error::Denied);
@@ -612,9 +694,13 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::Rewards { event, rule } => {
+        OrganizationAction::Rewards { event, rule } => {
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             if e.phase != Phase::Draft
                 || p.final_epoch.is_some()
                 || !p.schools.contains_key(&member.club)
@@ -628,7 +714,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             p.rewards.insert(member.club.clone(), rule);
         }
-        OfficeAction::Finalize { event, selected } => {
+        OrganizationAction::Finalize { event, selected } => {
             editable(state, ctx, &event)?;
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
             let p = plan(state, &event)?;
@@ -648,13 +734,17 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             let mut instances = BTreeSet::new();
             for game in &selected {
-                let r = state.office.resources.get(game).ok_or(Error::Denied)?;
+                let r = state
+                    .organization
+                    .resources
+                    .get(game)
+                    .ok_or(Error::Denied)?;
                 if !instances.insert((&r.peer, &r.operations_service, &r.instance)) {
                     return Err(Error::Denied);
                 }
             }
             if selected.iter().any(|game| {
-                state.office.plans.iter().any(|(other_id, other)| {
+                state.organization.plans.iter().any(|(other_id, other)| {
                     other_id != &event
                         && other.final_epoch.is_some()
                         && state
@@ -665,10 +755,10 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                         && other.checkin_opens_ms < p.ends_ms
                         && other.selected.iter().any(|g| {
                             state
-                                .office
+                                .organization
                                 .resources
                                 .get(g)
-                                .zip(state.office.resources.get(game))
+                                .zip(state.organization.resources.get(game))
                                 .is_some_and(|(a, b)| {
                                     a.peer == b.peer
                                         && a.operations_service == b.operations_service
@@ -681,27 +771,35 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
 
             let epoch = e.epoch;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             p.selected = selected;
             p.final_epoch = Some(epoch);
             let bytes = evidence(
                 state,
-                &OfficeAction::Polish {
+                &OrganizationAction::Polish {
                     event: event.clone(),
                     epoch,
                 },
             )?;
             let cid = store(state, &bytes)?;
             state
-                .office
+                .organization
                 .plans
                 .get_mut(&event)
                 .ok_or(Error::NotFound)?
                 .review_input = Some(cid);
         }
-        OfficeAction::GameClaim { event, game } => {
+        OrganizationAction::GameClaim { event, game } => {
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             if e.phase != Phase::Open
                 || actor != p.worker
                 || !p.selected.contains(&game)
@@ -719,7 +817,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             run.reserved = true;
         }
-        OfficeAction::GameReceipt {
+        OrganizationAction::GameReceipt {
             event,
             game,
             started,
@@ -741,7 +839,11 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 return Err(Error::Denied);
             }
             let e = state.events.get(&event).ok_or(Error::NotFound)?;
-            let p = state.office.plans.get_mut(&event).ok_or(Error::NotFound)?;
+            let p = state
+                .organization
+                .plans
+                .get_mut(&event)
+                .ok_or(Error::NotFound)?;
             if actor != p.worker
                 || !p.selected.contains(&game)
                 || !matches!(e.phase, Phase::Open | Phase::Cancelled)
@@ -771,15 +873,15 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             run.evidence = evidence;
             run.error = error;
         }
-        OfficeAction::Settle { event } => {
+        OrganizationAction::Settle { event } => {
             settle(state, ctx, &event)?;
         }
-        OfficeAction::Deliver {
+        OrganizationAction::Deliver {
             event,
             member: target,
         } => {
             let award = state
-                .office
+                .organization
                 .plans
                 .get_mut(&event)
                 .and_then(|p| p.awards.get_mut(&target))
@@ -792,9 +894,9 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             award.delivered_by = Some(actor.into());
         }
-        OfficeAction::Receive { event } => {
+        OrganizationAction::Receive { event } => {
             let award = state
-                .office
+                .organization
                 .plans
                 .get_mut(&event)
                 .and_then(|p| p.awards.get_mut(actor))
@@ -804,19 +906,19 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             award.received_ms = Some(ctx.now_ms);
         }
-        OfficeAction::Notify { task, due_ms } => {
+        OrganizationAction::Notify { task, due_ms } => {
             let t = state.tasks.get(&task).ok_or(Error::NotFound)?;
             let e = state.events.get(&t.event).ok_or(Error::NotFound)?;
             active(e)?;
             if !manage(e, ctx)
                 || t.done
                 || due_ms < ctx.now_ms
-                || state.office.notices.len() >= crate::MAX_RECORDS
+                || state.organization.notices.len() >= crate::MAX_RECORDS
             {
                 return Err(Error::Denied);
             }
             let member = t.assignee.clone().ok_or(Error::Denied)?;
-            state.office.notices.insert(
+            state.organization.notices.insert(
                 task.clone(),
                 Notice {
                     event: t.event.clone(),
@@ -827,9 +929,9 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::Acknowledge { notice } => {
+        OrganizationAction::Acknowledge { notice } => {
             let n = state
-                .office
+                .organization
                 .notices
                 .get_mut(&notice)
                 .ok_or(Error::NotFound)?;
@@ -838,7 +940,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             }
             n.acknowledged_ms = Some(ctx.now_ms);
         }
-        OfficeAction::Report {
+        OrganizationAction::Report {
             id,
             kind,
             period_start_ms,
@@ -851,21 +953,21 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             text(&recipient, 256)?;
             file(state, &requirements)?;
             if state
-                .office
+                .organization
                 .automation
                 .as_ref()
                 .is_none_or(|a| a.worker != worker)
                 || !club_manager(ctx, &member.club)
                 || period_start_ms >= period_end_ms
                 || period_end_ms > ctx.now_ms
-                || state.office.reports.contains_key(&id)
-                || state.office.reports.len() >= crate::MAX_RECORDS
+                || state.organization.reports.contains_key(&id)
+                || state.organization.reports.len() >= crate::MAX_RECORDS
                 || !ctx.core.members.contains_key(&worker)
             {
                 return Err(Error::Denied);
             }
             let profile = state
-                .office
+                .organization
                 .schools
                 .get(&member.club)
                 .ok_or(Error::Denied)?;
@@ -882,7 +984,7 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 &recipient,
             )?;
             let evidence = store(state, &evidence)?;
-            state.office.reports.insert(
+            state.organization.reports.insert(
                 id,
                 Report {
                     club: member.club.clone(),
@@ -900,9 +1002,13 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::ReportRevise { id, document } => {
+        OrganizationAction::ReportRevise { id, document } => {
             std::str::from_utf8(&state.files.read(&document)?).map_err(|_| Error::Denied)?;
-            let r = state.office.reports.get_mut(&id).ok_or(Error::NotFound)?;
+            let r = state
+                .organization
+                .reports
+                .get_mut(&id)
+                .ok_or(Error::NotFound)?;
             if !club_manager(ctx, &r.club)
                 || !matches!(r.status, ReportStatus::Draft | ReportStatus::Published)
             {
@@ -912,21 +1018,25 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
             r.version = r.version.checked_add(1).ok_or(Error::Capacity)?;
             r.status = ReportStatus::Draft;
         }
-        OfficeAction::ReportPublish { id } => {
+        OrganizationAction::ReportPublish { id } => {
             let output = state
-                .office
+                .organization
                 .reports
                 .get(&id)
                 .and_then(|r| r.output.as_ref())
                 .ok_or(Error::NotFound)?;
             std::str::from_utf8(&state.files.read(output)?).map_err(|_| Error::Denied)?;
-            let r = state.office.reports.get_mut(&id).ok_or(Error::NotFound)?;
+            let r = state
+                .organization
+                .reports
+                .get_mut(&id)
+                .ok_or(Error::NotFound)?;
             if !club_manager(ctx, &r.club) || r.status != ReportStatus::Draft {
                 return Err(Error::Denied);
             }
             let output = r.output.clone().ok_or(Error::Denied)?;
             r.status = ReportStatus::Published;
-            state.office.publications.insert(
+            state.organization.publications.insert(
                 id,
                 PublicReport {
                     club: r.club.clone(),
@@ -939,13 +1049,13 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::PushCheckpoint {
+        OrganizationAction::PushCheckpoint {
             group,
             expected,
             ciphertext,
         } => {
             if state
-                .office
+                .organization
                 .automation
                 .as_ref()
                 .is_none_or(|a| a.worker != actor)
@@ -954,20 +1064,20 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 return Err(Error::Denied);
             }
             text(&group, 128)?;
-            if !state.office.push_checkpoints.contains_key(&group)
-                && state.office.push_checkpoints.len() >= crate::MAX_RECORDS
+            if !state.organization.push_checkpoints.contains_key(&group)
+                && state.organization.push_checkpoints.len() >= crate::MAX_RECORDS
             {
                 return Err(Error::Capacity);
             }
             let revision = state
-                .office
+                .organization
                 .push_checkpoints
                 .get(&group)
                 .map_or(0, |p| p.revision);
             if revision != expected {
                 return Err(Error::Denied);
             }
-            state.office.push_checkpoints.insert(
+            state.organization.push_checkpoints.insert(
                 group,
                 PushCheckpoint {
                     revision: revision.checked_add(1).ok_or(Error::Capacity)?,
@@ -975,9 +1085,9 @@ pub fn transition(state: &mut EventsState, ctx: &Context<'_>, action: OfficeActi
                 },
             );
         }
-        OfficeAction::Polish { .. }
-        | OfficeAction::Summary { .. }
-        | OfficeAction::ReportGenerated { .. } => return Err(Error::Denied),
+        OrganizationAction::Polish { .. }
+        | OrganizationAction::Summary { .. }
+        | OrganizationAction::ReportGenerated { .. } => return Err(Error::Denied),
     }
     Ok(())
 }
@@ -1008,7 +1118,7 @@ fn settle(state: &mut EventsState, ctx: &Context<'_>, id: &str) -> Result<()> {
     let mut awards = BTreeMap::new();
     for (member, score) in &scores {
         let club = state
-            .office
+            .organization
             .enrollment
             .get(id)
             .and_then(|m| m.get(member))
@@ -1032,7 +1142,7 @@ fn settle(state: &mut EventsState, ctx: &Context<'_>, id: &str) -> Result<()> {
     }
     for award in awards.values() {
         let balance = state
-            .office
+            .organization
             .points
             .entry(award.club.clone())
             .or_default()
@@ -1040,7 +1150,11 @@ fn settle(state: &mut EventsState, ctx: &Context<'_>, id: &str) -> Result<()> {
             .or_default();
         *balance = balance.checked_add(award.points).ok_or(Error::Capacity)?;
     }
-    let p = state.office.plans.get_mut(id).ok_or(Error::NotFound)?;
+    let p = state
+        .organization
+        .plans
+        .get_mut(id)
+        .ok_or(Error::NotFound)?;
     p.awards = awards;
     p.settled = true;
     Ok(())
@@ -1057,7 +1171,7 @@ fn report_evidence(
     let records = state.events.iter()
         .filter(|(_,e)| e.window.starts_ms >= start && e.window.starts_ms < end && (e.organizer == club || e.co_organizers.contains(club)))
         .map(|(id,e)| {
-            let plan=state.office.plans.get(id);
+            let plan=state.organization.plans.get(id);
             let summary=plan.and_then(|p|p.summary.as_ref()).map(|cid|document_evidence(state,cid)).transpose()?;
             let planning_document=document_evidence(state,&e.brief_hash.parse()?)?;
             Ok(serde_json::json!({"id":id,"event":e,"plan":plan,"planning_document":planning_document,"summary":summary,"attendance":state.checkins.get(id),"tasks":state.tasks.iter().filter(|(_,t)|&t.event==id).collect::<BTreeMap<_,_>>()}))

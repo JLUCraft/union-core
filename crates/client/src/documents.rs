@@ -9,12 +9,8 @@ pub struct Input {
     pub hash: String,
 }
 pub async fn fetch(identity: Identity, input: Input) -> Result<Vec<u8>> {
-    let peer = input.peer.parse().map_err(|_| Error::Denied)?;
-    let address: crate::Multiaddr = input.address.parse().map_err(|_| Error::Denied)?;
+    let (address, peer) = crate::endpoint(&input.address, &input.peer)?;
     let service = input.service.parse().map_err(|_| Error::Denied)?;
-    if !matches!(address.iter().last(),Some(crate::AddressProtocol::P2p(id)) if id==peer) {
-        return Err(Error::Denied);
-    }
     let node = Node::start(identity, NodeConfig::default()).await?;
     let result = async {
         node.dial(address).await?;

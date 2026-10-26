@@ -6,6 +6,16 @@ mod support;
 type State = support::Scenario<EventsDomain>;
 const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 #[test]
+fn identity_projection_exposes_the_current_club_president() {
+    let admin = Identity::generate();
+    let identities = support::Identities::new(&[(&admin, "admin", "a")], "admin");
+    let state: state::State<EventsDomain> = identities.genesis();
+    let core = state.identity_core(identities.log.state()).unwrap();
+    assert!(core.members["chair-a"].roles.contains("president"));
+    assert!(!core.members["admin"].roles.contains("president"));
+    assert!(core.admins.contains(&admin.peer_id().to_string()));
+}
+#[test]
 fn lifecycle_task_authorization_signup_boundaries_and_revision_binding() {
     let root = Identity::generate();
     let a = Identity::generate();
@@ -17,6 +27,36 @@ fn lifecycle_task_authorization_signup_boundaries_and_revision_binding() {
         &[(&root, "admin", "a"), (&a, "alice", "a"), (&b, "bob", "b")],
         "admin",
     );
+    assert!(
+        state
+            .apply(
+                &alice,
+                state.revision,
+                2,
+                A::Domain(E::Create {
+                    id: "unauthorized".into(),
+                    title: "Draft".into(),
+                    brief_hash: HASH.into(),
+                    window: Window {
+                        opens_ms: 100,
+                        closes_ms: 200,
+                        starts_ms: 300
+                    },
+                })
+            )
+            .is_err()
+    );
+    state
+        .apply(
+            &admin,
+            state.revision,
+            2,
+            A::SetMemberRoles {
+                member: "alice".into(),
+                roles: ["president".into()].into(),
+            },
+        )
+        .unwrap();
     state
         .apply(
             &alice,

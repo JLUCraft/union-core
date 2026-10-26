@@ -188,7 +188,16 @@ impl<D: Domain> State<D> {
                         .members
                         .get(id)
                         .map(|m| m.roles.clone())
-                        .unwrap_or_default(),
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(
+                            trust
+                                .chairs()
+                                .get(club)
+                                .filter(|chair| *chair == id)
+                                .map(|_| "president".to_owned()),
+                        )
+                        .collect(),
                 },
             );
             for device in devices {

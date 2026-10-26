@@ -62,6 +62,68 @@ async fn transfer(client: &Node, server: &mut Node) -> TestResult {
 }
 
 #[tokio::test]
+async fn default_nodes_publish_dialable_interface_addresses() -> TestResult {
+    timeout(Duration::from_secs(30), async {
+        let mut server = Node::start(Identity::generate(), NodeConfig::default()).await?;
+        let address = server.addresses().into_iter().find(|address| {
+            address.iter().any(|part| {
+                matches!(part, node::AddressProtocol::Ip4(ip) if !ip.is_loopback() && !ip.is_unspecified())
+            })
+        });
+        let Some(address) = address else {
+            server.shutdown().await?;
+            return Err("default node has no interface address for remote peers".into());
+        };
+        let client = Node::start(Identity::generate(), NodeConfig::default()).await?;
+        client.dial(address).await?;
+        transfer(&client, &mut server).await?;
+        client.shutdown().await?;
+        server.shutdown().await?;
+        TestResult::Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn short_lived_terminals_release_their_peer_connections() -> TestResult {
+    const TERMINAL_RESTARTS: usize = 8;
+    timeout(Duration::from_secs(30), async {
+        let host = Node::start(
+            Identity::generate(),
+            NodeConfig {
+                listen: vec!["/ip4/127.0.0.1/udp/0/quic-v1".parse()?],
+                ..NodeConfig::default()
+            },
+        )
+        .await?;
+        let identity = Identity::generate();
+        for index in 0..TERMINAL_RESTARTS {
+            let identity = identity.clone();
+            let address = host.addresses()[0].clone();
+            let peer = host.peer_id();
+            tokio::task::spawn_blocking(move || -> node::Result<()> {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .map_err(|error| Error::Network(error.to_string()))?;
+                runtime.block_on(async move {
+                    let client = Node::start(identity, NodeConfig::default()).await?;
+                    client.dial(address).await?;
+                    client.list_services(peer).await?;
+                    client.shutdown().await
+                })
+            })
+            .await?
+            .map_err(|error| format!("terminal restart {index}: {error}"))?;
+        }
+        host.shutdown().await?;
+        TestResult::Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
 async fn direct_quic_directory_stream_and_half_close() -> TestResult {
     timeout(Duration::from_secs(30), async {
         let mut server = Node::start(Identity::generate(), NodeConfig::default()).await?;

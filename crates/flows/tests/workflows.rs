@@ -53,6 +53,7 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
     h.run(
         1,
         A::Domain(F::Start {
+            max_points: 1_000_000,
             id: "ai".into(),
             template: "joint".into(),
             input: Some(input.clone()),
@@ -110,6 +111,7 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
             job: job.job.clone(),
             attempt: 0,
             output: None,
+            usage: None,
             error: Some("retry requested".into()),
         }),
     )
@@ -165,6 +167,11 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
                 job: job.job.clone(),
                 attempt: usize::MAX,
                 output: Some(output.clone()),
+                usage: Some(protocol::LlmUsage {
+                    prompt_tokens: 8,
+                    completion_tokens: 4,
+                    total_tokens: 12
+                }),
                 error: None
             })
         )
@@ -177,6 +184,11 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
             job: job.job.clone(),
             attempt: 1,
             output: Some(output.clone()),
+            usage: Some(protocol::LlmUsage {
+                prompt_tokens: 8,
+                completion_tokens: 4,
+                total_tokens: 12,
+            }),
             error: None,
         }),
     )
@@ -190,6 +202,11 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
                 job: job.job,
                 attempt: 1,
                 output: Some(output.clone()),
+                usage: Some(protocol::LlmUsage {
+                    prompt_tokens: 8,
+                    completion_tokens: 4,
+                    total_tokens: 12
+                }),
                 error: None
             })
         )
@@ -203,6 +220,7 @@ fn ai_receipts_pin_inputs_reject_duplicates_and_replay_without_inference() {
         }),
     )
     .unwrap();
+    h.presidents("ai");
     h.run(
         1,
         A::Domain(F::Execute {
@@ -246,9 +264,41 @@ impl Harness {
             ],
             "admin",
         );
-        let genesis = identities.genesis();
+        let mut genesis = identities.genesis::<Office>();
+        genesis.domain.ai_pricing.insert(
+            "local".into(),
+            flows::ai::AiPricing {
+                base_points: 1,
+                input_points_per_1k: 1,
+                output_points_per_1k: 1,
+                max_input_tokens: 1024,
+                settlement: flows::ai::Settlement::Burn,
+            },
+        );
+        genesis.domain.ai_workers.insert(
+            "bob".into(),
+            flows::ai::AiWorker {
+                models: ["local".into()].into(),
+                active: true,
+            },
+        );
+        genesis.domain.inner.organization.points.insert(
+            "a".into(),
+            [
+                ("alice".into(), 100_000),
+                ("bob".into(), 100_000),
+                ("admin".into(), 100_000),
+            ]
+            .into(),
+        );
+        genesis
+            .domain
+            .inner
+            .organization
+            .points
+            .insert("b".into(), [("carol".into(), 100_000)].into());
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("office.json");
+        let path = dir.path().join("organization.json");
         let journal = Journal::open(&path, genesis.clone()).unwrap();
         let mut h = Self {
             identities,
@@ -267,8 +317,18 @@ impl Harness {
             },
         )
         .unwrap();
+        for (member, role) in [("alice", "manager"), ("carol", "president")] {
+            h.run(
+                0,
+                A::SetMemberRoles {
+                    member: member.into(),
+                    roles: [role.into()].into(),
+                },
+            )
+            .unwrap();
+        }
         h.run(
-            1,
+            2,
             A::Domain(F::Inner(E::Create {
                 id: "event".into(),
                 title: "Joint event".into(),
@@ -307,6 +367,7 @@ impl Harness {
         self.run(
             1,
             A::Domain(F::Start {
+                max_points: 1_000_000,
                 input: None,
                 id: id.into(),
                 template: "joint".into(),
@@ -327,6 +388,13 @@ impl Harness {
                 comment_hash: HASH.into(),
             }),
         )
+    }
+    fn presidents(&mut self, id: &str) {
+        assert_eq!(self.journal.state().domain.flows[id].status, Status::Active);
+        assert!(self.vote(1, id).is_err());
+        self.vote(2, id).unwrap();
+        assert_eq!(self.journal.state().domain.flows[id].status, Status::Active);
+        self.vote(3, id).unwrap();
     }
     fn denied(&mut self, signer: usize, action: A) {
         let before = serde_json::to_vec(self.journal.state()).unwrap();
@@ -395,6 +463,7 @@ fn multistage_authorization_execution_and_signed_replay() {
     assert!(h.vote(2, "flow").is_err()); // same club cannot supply two seats
     h.vote(3, "flow").unwrap();
     h.vote(0, "flow").unwrap();
+    h.presidents("flow");
     assert_eq!(
         h.journal.state().domain.flows["flow"].status,
         Status::Approved
@@ -451,6 +520,7 @@ fn delegation_is_same_club_single_hop_and_current_roles_are_rechecked() {
     );
     assert!(h.vote(2, "flow").is_err());
     h.vote(4, "flow").unwrap();
+    h.presidents("flow");
     h.run(
         0,
         A::SetMemberRoles {
@@ -508,6 +578,7 @@ fn explicit_timeout_escalation_rejection_and_autoapproval() {
             TimeoutPolicy::Escalate => {
                 assert_eq!(h.journal.state().domain.flows["flow"].current, 1);
                 h.vote(0, "flow").unwrap();
+                h.presidents("flow");
                 h.run(
                     1,
                     A::Domain(F::Execute {
@@ -517,6 +588,7 @@ fn explicit_timeout_escalation_rejection_and_autoapproval() {
                 .unwrap();
             }
             TimeoutPolicy::AutoApprove => {
+                h.presidents("flow");
                 h.run(
                     1,
                     A::Domain(F::Execute {
@@ -562,6 +634,7 @@ fn rejection_cancellation_versions_and_payload_whitelist() {
     h.denied(
         1,
         A::Domain(F::Start {
+            max_points: 1_000_000,
             input: None,
             id: "bad".into(),
             template: "joint".into(),
@@ -586,6 +659,7 @@ fn rejection_cancellation_versions_and_payload_whitelist() {
     h.denied(
         1,
         A::Domain(F::Start {
+            max_points: 1_000_000,
             input: None,
             id: "retired".into(),
             template: "joint".into(),
@@ -604,6 +678,7 @@ fn payload_failure_is_atomic_and_revoked_approvals_cannot_execute() {
     h.install(vec![stage(role(), TimeoutPolicy::Reject)]);
     h.start("flow");
     h.vote(2, "flow").unwrap();
+    h.presidents("flow");
     h.run(
         1,
         A::Domain(F::Inner(E::CancelEvent { id: "event".into() })),
@@ -623,6 +698,7 @@ fn payload_failure_is_atomic_and_revoked_approvals_cannot_execute() {
     h.install(vec![stage(role(), TimeoutPolicy::Reject)]);
     h.start("flow");
     h.vote(2, "flow").unwrap();
+    h.presidents("flow");
     let phone = Identity::generate();
     h.identities.append(
         protocol::TrustAction::BindDevice {
@@ -652,6 +728,7 @@ fn changing_the_brief_invalidates_an_already_approved_flow() {
     h.install(vec![stage(role(), TimeoutPolicy::Reject)]);
     h.start("flow");
     h.vote(2, "flow").unwrap();
+    h.presidents("flow");
     h.run(
         1,
         A::Domain(F::Inner(E::Amend {
@@ -727,6 +804,7 @@ impl Harness {
         self.run(
             1,
             A::Domain(F::Start {
+                max_points: 1_000_000,
                 id: id.into(),
                 template: "joint".into(),
                 input: Some(input),
@@ -762,6 +840,11 @@ impl Harness {
                 job: job.job.clone(),
                 attempt: job.attempt,
                 output: Some(output),
+                usage: Some(protocol::LlmUsage {
+                    prompt_tokens: 8,
+                    completion_tokens: 4,
+                    total_tokens: 12,
+                }),
                 error: None,
             }),
         )
@@ -771,7 +854,7 @@ impl Harness {
 #[test]
 fn review_decisions_control_execution_and_survive_replay() {
     for (decision, expected) in [
-        ("approve", Status::Approved),
+        ("approve", Status::Active),
         ("changes_requested", Status::ChangesRequested),
         ("reject", Status::Rejected),
     ] {
@@ -791,13 +874,16 @@ fn review_decisions_control_execution_and_survive_replay() {
             )
             .is_err()
         );
+        if decision == "approve" {
+            h.vote(2, "review").unwrap();
+        }
         let execution = h.run(
             1,
             A::Domain(F::Execute {
                 instance: "review".into(),
             }),
         );
-        assert_eq!(execution.is_ok(), expected == Status::Approved);
+        assert_eq!(execution.is_ok(), decision == "approve");
         let state = h.journal.state().clone();
         drop(h.journal);
         assert_eq!(
@@ -834,6 +920,7 @@ fn review_rejects_invalid_outputs_substituted_inputs_and_stale_material() {
     h.denied(
         1,
         A::Domain(F::Start {
+            max_points: 1_000_000,
             id: "substituted".into(),
             template: "joint".into(),
             input: Some(other.clone()),
@@ -859,6 +946,7 @@ fn review_rejects_invalid_outputs_substituted_inputs_and_stale_material() {
     h.denied(
         1,
         A::Domain(F::Start {
+            max_points: 1_000_000,
             id: "stale".into(),
             template: "joint".into(),
             input: Some(input),
@@ -920,4 +1008,221 @@ fn ai_timeouts_cannot_skip_review_and_cancelled_results_cannot_advance() {
     )
     .unwrap();
     assert!(h.finish(&job, output).is_err());
+}
+
+#[test]
+fn default_president_approval_revises_and_restarts_without_templates() {
+    let mut h = Harness::new();
+    let payload = |epoch| E::Approve {
+        id: "event".into(),
+        epoch,
+        co_organizers: ["b".into()].into(),
+    };
+    h.run(
+        1,
+        A::Domain(F::StartPresidents {
+            id: "initial".into(),
+            payload: payload(1),
+        }),
+    )
+    .unwrap();
+    h.denied(
+        1,
+        A::Domain(F::Approve {
+            instance: "initial".into(),
+            comment_hash: HASH.into(),
+        }),
+    );
+    h.denied(
+        2,
+        A::Domain(F::Delegate {
+            instance: "initial".into(),
+            to: "alice".into(),
+        }),
+    );
+    h.vote(2, "initial").unwrap();
+    h.denied(
+        2,
+        A::Domain(F::Approve {
+            instance: "initial".into(),
+            comment_hash: HASH.into(),
+        }),
+    );
+    h.denied(
+        1,
+        A::Domain(F::Execute {
+            instance: "initial".into(),
+        }),
+    );
+    h.run(
+        3,
+        A::Domain(F::Reject {
+            instance: "initial".into(),
+            reason: HASH.into(),
+        }),
+    )
+    .unwrap();
+    h.run(
+        1,
+        A::Domain(F::Inner(E::Revise {
+            id: "event".into(),
+            title: "Revised event".into(),
+            brief_hash: "b".repeat(64),
+            window: Window {
+                opens_ms: 1100,
+                closes_ms: 2100,
+                starts_ms: 3100,
+            },
+        })),
+    )
+    .unwrap();
+    let event = &h.journal.state().domain.inner.events["event"];
+    assert_eq!(event.phase, Phase::Draft);
+    assert_eq!(event.epoch, 2);
+    assert_eq!(event.title, "Revised event");
+    assert_eq!(event.window.starts_ms, 3100);
+    h.run(1, A::Domain(F::Inner(E::Submit { id: "event".into() })))
+        .unwrap();
+    h.denied(
+        2,
+        A::Domain(F::Approve {
+            instance: "initial".into(),
+            comment_hash: HASH.into(),
+        }),
+    );
+    h.run(
+        1,
+        A::Domain(F::StartPresidents {
+            id: "revised".into(),
+            payload: payload(2),
+        }),
+    )
+    .unwrap();
+    h.presidents("revised");
+    // A participating president can carry out the completed management request.
+    h.run(
+        3,
+        A::Domain(F::Execute {
+            instance: "revised".into(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        h.journal.state().domain.inner.events["event"].phase,
+        Phase::Approved
+    );
+    let state = h.journal.state().clone();
+    drop(h.journal);
+    assert_eq!(
+        Journal::<Office>::open(&h.path, h.genesis).unwrap().state(),
+        &state
+    );
+}
+
+#[test]
+fn managers_are_scoped_and_presidency_is_rechecked_after_signing() {
+    let mut h = Harness::new();
+    h.denied(
+        1,
+        A::Domain(F::Inner(E::Create {
+            id: "manager-draft".into(),
+            title: "Forbidden".into(),
+            brief_hash: HASH.into(),
+            window: Window {
+                opens_ms: 1000,
+                closes_ms: 2000,
+                starts_ms: 3000,
+            },
+        })),
+    );
+    h.denied(
+        3,
+        A::Domain(F::Inner(E::Amend {
+            id: "event".into(),
+            brief_hash: "b".repeat(64),
+        })),
+    );
+    h.run(
+        1,
+        A::Domain(F::StartPresidents {
+            id: "presidents".into(),
+            payload: E::Approve {
+                id: "event".into(),
+                epoch: 1,
+                co_organizers: ["b".into()].into(),
+            },
+        }),
+    )
+    .unwrap();
+    h.presidents("presidents");
+    h.run(
+        0,
+        A::SetMemberRoles {
+            member: "bob".into(),
+            roles: ["manager".into()].into(),
+        },
+    )
+    .unwrap();
+    h.denied(
+        1,
+        A::Domain(F::Execute {
+            instance: "presidents".into(),
+        }),
+    );
+    assert_eq!(
+        h.journal.state().domain.inner.events["event"].phase,
+        Phase::Review
+    );
+}
+
+#[test]
+fn replacement_president_can_replace_an_invalid_signature_before_quorum() {
+    let mut h = Harness::new();
+    h.run(
+        1,
+        A::Domain(F::StartPresidents {
+            id: "succession".into(),
+            payload: E::Approve {
+                id: "event".into(),
+                epoch: 1,
+                co_organizers: ["b".into()].into(),
+            },
+        }),
+    )
+    .unwrap();
+    h.vote(2, "succession").unwrap();
+    for (member, role) in [("bob", "manager"), ("dave", "president")] {
+        h.run(
+            0,
+            A::SetMemberRoles {
+                member: member.into(),
+                roles: [role.into()].into(),
+            },
+        )
+        .unwrap();
+    }
+    h.denied(
+        2,
+        A::Domain(F::Approve {
+            instance: "succession".into(),
+            comment_hash: HASH.into(),
+        }),
+    );
+    h.vote(4, "succession").unwrap();
+    h.vote(3, "succession").unwrap();
+    h.run(
+        4,
+        A::Domain(F::Execute {
+            instance: "succession".into(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        h.journal.state().domain.inner.events["event"].phase,
+        Phase::Approved
+    );
+    assert_eq!(
+        h.journal.state().domain.flows["succession"].records[0].approvals["a"].device,
+        h.keys[4].peer_id().to_string()
+    );
 }

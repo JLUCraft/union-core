@@ -31,6 +31,7 @@ pub async fn request<D: Domain>(
     peer: crate::PeerId,
     genesis_hash: &str,
     request: Request,
+    protocol: &'static str,
 ) -> Result<Response<D>> {
     protocol::validate_digest(genesis_hash)
         .map_err(|_| Error::protocol("a pinned lowercase genesis SHA-256 is required"))?;
@@ -41,6 +42,7 @@ pub async fn request<D: Domain>(
             genesis_hash: genesis_hash.into(),
             request,
         },
+        protocol,
     )
     .await?;
     response.verify(genesis_hash)?;
@@ -51,7 +53,11 @@ pub async fn request<D: Domain>(
 
 /// TOFU discovery: the caller has no pinned hash yet, so the serve side skips the
 /// pin comparison and the caller must verify the returned genesis locally.
-pub async fn discover<D: Domain>(node: &crate::Node, peer: crate::PeerId) -> Result<Response<D>> {
+pub async fn discover<D: Domain>(
+    node: &crate::Node,
+    peer: crate::PeerId,
+    protocol: &'static str,
+) -> Result<Response<D>> {
     exchange(
         node,
         peer,
@@ -59,6 +65,7 @@ pub async fn discover<D: Domain>(node: &crate::Node, peer: crate::PeerId) -> Res
             genesis_hash: String::new(),
             request: Request::Genesis,
         },
+        protocol,
     )
     .await
 }
@@ -67,9 +74,10 @@ async fn exchange<D: Domain>(
     node: &crate::Node,
     peer: crate::PeerId,
     exchange: &Exchange,
+    protocol: &'static str,
 ) -> Result<Response<D>> {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let mut stream = node.open_protocol(peer, PROTOCOL).await?;
+        let mut stream = node.open_protocol(peer, protocol).await?;
         send_chunked(&mut stream, exchange).await?;
         let mut json = Vec::new();
         for sequence in 0..=MAX_SNAPSHOT / CHUNK_SIZE {
@@ -95,9 +103,10 @@ pub async fn serve<D: Domain>(
     node: &crate::Node,
     journal: std::sync::Arc<tokio::sync::Mutex<Journal<D>>>,
     identity: crate::trust::TrustView,
+    protocol: &'static str,
 ) -> Result<()> {
     use futures::StreamExt;
-    let mut incoming = node.accept_protocol(PROTOCOL)?;
+    let mut incoming = node.accept_protocol(protocol)?;
     let mut tasks = tokio::task::JoinSet::new();
     let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(32));
     loop {

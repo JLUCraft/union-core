@@ -43,10 +43,9 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 
 pub const DIRECTORY_PROTOCOL: &str = "/jlucraft/union/directory/1";
-pub const GOVERNANCE_PROTOCOL: &str = "/jlucraft/union/governance/3";
-pub const EVENTS_PROTOCOL: &str = "/jlucraft/union/events/1";
+pub const GOVERNANCE_PROTOCOL: &str = "/jlucraft/union/application/1";
+pub const EVENTS_PROTOCOL: &str = "/jlucraft/union/application-events/1";
 pub const RAFT_PROTOCOL: &str = "/jlucraft/union/raft/1";
-pub const LLM_PROTOCOL: &str = "/jlucraft/union/llm/1";
 pub const OPS_PROTOCOL: &str = "jlucraft/federated-ops/1";
 pub const SESSION_PROTOCOL: &str = "/jlucraft/union/session/1";
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -203,6 +202,20 @@ pub struct LlmRequest {
     pub purpose: String,
     pub privacy: Privacy,
 }
+/// A point account is attributed to the verified member and club, never a display name.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointAccount {
+    pub club: String,
+    pub member: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiAllowance {
+    pub scope: String,
+    pub epoch: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LlmUsage {
     pub prompt_tokens: u64,
@@ -212,17 +225,7 @@ pub struct LlmUsage {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LlmFrame {
-    Delta {
-        content: String,
-    },
-    Done {
-        usage: Option<LlmUsage>,
-        truncated: bool,
-    },
-    Error {
-        error: String,
-        truncated: bool,
-    },
+    Delta { content: String },
 }
 
 /// Identity-authorized, content-addressed documents.
@@ -677,10 +680,6 @@ pub enum TrustAction {
     CancelSuccession {
         id: String,
     },
-    ReplaceChairs {
-        chairs: std::collections::BTreeMap<String, String>,
-        quorum: usize,
-    },
     AuthorizeVerifier {
         id: String,
         club: String,
@@ -807,11 +806,11 @@ impl From<&str> for ClientFailure {
     }
 }
 
-/// Private push subscriptions travel only over an authorized service stream, never the public office journal.
-pub const OFFICE_PUSH_PROTOCOL: &str = "/jlucraft/office-push/1";
+/// Private push subscriptions travel only over an authorized service stream, never the application journal.
+pub const APPLICATION_PUSH_PROTOCOL: &str = "/jlucraft/notifications/1";
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OfficePushRequest {
+pub enum ApplicationPushRequest {
     Info,
     Subscribe {
         endpoint: String,
@@ -824,13 +823,13 @@ pub enum OfficePushRequest {
     Unsubscribe,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct OfficePushResponse {
+pub struct ApplicationPushResponse {
     pub ok: bool,
     pub vapid: String,
     pub error: Option<String>,
 }
 
-/// Supported office attachments. Detection is based on content, never a client filename.
+/// Supported activity attachments. Detection is based on content, never a client filename.
 pub fn llm_document_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"%PDF-") {
         Some("application/pdf")
@@ -845,46 +844,5 @@ pub fn llm_document_mime(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Multi-frame JSON requests allow original PDF/scan evidence without increasing frame size.
+/// Upper bound for a task's local provider request material and attachments.
 pub const MAX_LLM_REQUEST_BYTES: usize = 16 * 1024 * 1024;
-const LLM_CHUNK_BYTES: usize = MAX_FRAME / 2;
-pub async fn write_llm_request(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request: &LlmRequest,
-) -> Result<()> {
-    let bytes = serde_json::to_vec(request).map_err(|e| Error::Protocol(e.to_string()))?;
-    if bytes.len() > MAX_LLM_REQUEST_BYTES {
-        return Err(Error::Capacity);
-    }
-    let count = bytes.len().div_ceil(LLM_CHUNK_BYTES);
-    for (sequence, chunk) in bytes.chunks(LLM_CHUNK_BYTES).enumerate() {
-        write_frame(
-            writer,
-            &JsonFrame {
-                json: chunk.to_vec(),
-                sequence: sequence as u32,
-                last: sequence + 1 == count,
-            },
-        )
-        .await?;
-    }
-    Ok(())
-}
-pub async fn read_llm_request(reader: &mut (impl AsyncRead + Unpin)) -> Result<LlmRequest> {
-    let mut bytes = Vec::new();
-    for sequence in 0..MAX_LLM_REQUEST_BYTES / LLM_CHUNK_BYTES {
-        let frame: JsonFrame = read_frame(reader).await?;
-        if frame.sequence as usize != sequence
-            || frame.json.is_empty()
-            || (!frame.last && frame.json.len() != LLM_CHUNK_BYTES)
-            || bytes.len().saturating_add(frame.json.len()) > MAX_LLM_REQUEST_BYTES
-        {
-            return Err(Error::Denied);
-        }
-        bytes.extend_from_slice(&frame.json);
-        if frame.last {
-            return serde_json::from_slice(&bytes).map_err(|e| Error::Protocol(e.to_string()));
-        }
-    }
-    Err(Error::Capacity)
-}
